@@ -32,6 +32,8 @@ export interface BoothOptions {
   loop: DayLoop
   shiftRealSeconds: number
   freeQuestions: boolean
+  // Notices from the adversary during the shift, for example a rejected API key
+  subscribeNotices?: (show: (text: string) => void) => () => void
   // Called once the player leaves the booth after the shift is over
   onShiftOver(): void
 }
@@ -1023,10 +1025,13 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     raf = requestAnimationFrame(frame)
   }
 
+  const unsubscribeNotices = options.subscribeNotices?.((text) => note(text)) ?? (() => undefined)
+
   const destroy = () => {
     cancelAnimationFrame(raf)
     window.removeEventListener('keydown', onKey)
     unsubscribe()
+    unsubscribeNotices()
   }
 
   clearApplicant()

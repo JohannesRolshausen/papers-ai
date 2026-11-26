@@ -1555,6 +1555,152 @@ html.gallery-page body {
   gap: 16px;
 }
 
+/* ---------- API key form (setup and key dialog) ---------- */
+
+.setup-claude {
+  margin-top: 14px;
+  padding: 10px 14px;
+  background: #2b2926;
+  box-shadow: 0 0 0 3px #3b3833;
+}
+
+.setup-claude[hidden] {
+  display: none;
+}
+
+.key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+}
+
+.key-label {
+  width: 70px;
+  flex: none;
+  font-size: 13px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.key-input {
+  width: 380px;
+  padding: 4px 8px;
+  font-family: var(--type-font);
+  font-size: 20px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 0;
+  box-shadow:
+    inset 2px 2px 0 rgba(0, 0, 0, 0.25),
+    0 0 0 2px var(--frame);
+  user-select: text;
+}
+
+.key-input:focus {
+  outline: 2px solid var(--select);
+}
+
+.key-status {
+  flex: 1;
+  font-family: var(--type-font);
+  font-size: 19px;
+  line-height: 18px;
+  color: var(--muted);
+}
+
+.key-status.ok {
+  color: #9fc27e;
+}
+
+.key-status.error {
+  color: #e0806f;
+}
+
+.key-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.key-remember input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--amber);
+}
+
+.key-warning {
+  padding: 3px 8px;
+  background: var(--amber);
+  color: var(--ink);
+  font-family: var(--type-font);
+  font-size: 18px;
+  line-height: 17px;
+}
+
+.key-warning[hidden] {
+  display: none;
+}
+
+.key-models {
+  display: flex;
+  gap: 8px;
+}
+
+.key-model-note,
+.key-hint {
+  font-family: var(--type-font);
+  font-size: 19px;
+  line-height: 18px;
+  color: #c4bba9;
+}
+
+.key-dialog {
+  width: 760px;
+}
+
+.key-dialog-text {
+  font-family: var(--type-font);
+  font-size: 20px;
+  line-height: 19px;
+  margin-bottom: 10px;
+}
+
+.dialog .key-label {
+  color: var(--ink-soft);
+}
+
+.dialog .key-input {
+  width: 300px;
+}
+
+.dialog .key-status {
+  color: var(--ink-soft);
+}
+
+.dialog .key-status.ok {
+  color: var(--green-dark);
+}
+
+.dialog .key-status.error {
+  color: var(--red-dark);
+}
+
+.dialog .key-model-note,
+.dialog .key-hint {
+  color: var(--ink-soft);
+}
+
 /* ---------- Morning bulletin ---------- */
 
 .bulletin-screen {

@@ -10,16 +10,17 @@ your blind spots, trust gets built and then abused, and feedback arrives late or
 
 ## Status
 
-Packages 1 to 3 of 5 are done: the rules engine, the contract with the adversary, the complete
-game logic, the rule-based offline adversary and the playable interface in the browser. A full game
-can be played offline from the title screen to the final report.
+Packages 1 to 4 of 5 are done: the rules engine, the contract with the adversary, the complete
+game logic, the rule-based offline adversary, the playable interface in the browser and Claude as
+the adversary. A full game can be played offline from the title screen to the final report, or
+against Claude with your own API key.
 
 | Package            | Content                                                                             | Status |
 | ------------------ | ----------------------------------------------------------------------------------- | ------ |
 | 1 Foundation       | World data, documents, rules, validator, materializer, plan schema, fairness tests  | done   |
 | 2 Game logic       | Day loop, clock, economy, consequences, observations, offline adversary, simulation | done   |
 | 3 Interface        | Booth, desk, rulebook, inspect mode, stamps, portraits, seals, typing test          | done   |
-| 4 Claude adversary | Day planner, live interrogation, API key setup, error handling                      | open   |
+| 4 Claude adversary | Day planner, live interrogation, API key setup, error handling                      | done   |
 | 5 Integration      | Debrief, save and load, sound, end-to-end test                                      | open   |
 
 ## Commands
@@ -48,6 +49,10 @@ npm run sim
 npm run smoke
 ```
 
+```bash
+npm run smoke:claude
+```
+
 `npm run dev` opens the game. Two development views stay reachable: `?dev` opens the engine
 inspector, which plays the days before the chosen one with a bot and then shows the offline
 adversary's plan and every person with the ground truth visible. `?gallery` shows every face part
@@ -58,6 +63,10 @@ Chromium through Playwright: one inspection with a hit, one deep check with a ty
 a typo that must be corrected), APPROVE and DENY, the evening report, the save, no console errors.
 `--full` plays on to the final report with one reload and Continue in between. `--shots <dir>`
 saves screenshots of bulletin, booth and evening report (see `docs/screenshots`).
+`npm run smoke:claude` (or `--claude`) plays day 1 in Claude mode against a scripted stand-in for
+the API (`?test&mock=claude`, see `src/dev/mockClaude.ts`): key check with a wrong and a right
+key, the plan from Claude, a free question streamed into the bubble, the plan for day 2 requested
+during the evening report, and the key dialog after a reload without a stored key.
 
 `npm run sim` plays complete games against the offline adversary for every difficulty with three
 bot players (perfect, average, careless) and prints how many infiltrators got through. Options:
@@ -107,7 +116,9 @@ error if the perfect bot lets someone through or gets fired, or if a plan needed
 reports and sends the player's actions back to it. Game rules live only in `src/core`.
 
 - `app.ts` runs the screen flow (title, setup, bulletin, booth, evening, final report or dismissal)
-  and saves after every phase. `src/ai/factory.ts` picks the adversary for a game.
+  and saves after every phase. `src/ai/factory.ts` picks the adversary for a game. `keyStore.ts`
+  keeps the API key, `components/keyForm.ts` is the key form on the setup screen and in the key
+  dialog.
 - `screens/` holds one module per screen. `booth.ts` is the main screen: top bar with day, clock,
   savings and the line, the window with portrait, height chart, scale, luggage and speech bubble,
   the transcript and questions, the desk with draggable papers, rulebook, bulletin and calendar,
@@ -135,6 +146,41 @@ also as a sepia photo and under any hair, beard, glasses and hat.
 | Real threat, denied and not reported               | A deep check tool slowed or broken next day, or a fine      |
 | Real complaint, denied without a documented reason | 30 minutes lost to a supervisor review next morning         |
 | Empty lever                                        | Never anything                                              |
+
+### Claude adversary
+
+Choose Claude on the setup screen, paste your own Anthropic API key and pick a model: Claude Opus
+5.5 (default), Claude Sonnet 5.5 or Claude Haiku 5.5. "Check key" asks the models endpoint, which
+costs nothing.
+
+- The key stays in your browser. It is kept in `sessionStorage` for the open tab and in
+  `localStorage` only if you tick "Remember on this device" (unencrypted, readable by anyone who
+  uses this browser profile). It is never written into the save game and is sent only to the
+  Anthropic API, directly from the browser.
+- Claude costs money on your account: one planning request per day with a growing conversation
+  (cached), and one short request per question you ask at the window.
+- Without a key, or with the offline mode, the game is fully playable.
+
+`src/ai/claudeAdversary.ts` implements the same `Adversary` interface as the offline adversary.
+
+- Planning: `client.beta.messages.parse` with the `DayPlan` schema as structured output, adaptive
+  thinking at high effort and server-side fallbacks (`fallbacks: "default"`) for declined
+  requests. The game manual (`src/ai/prompts.ts`) is a static system prompt with a one-hour
+  cache breakpoint. One conversation runs over the whole game and only grows: each day appends the
+  briefing with the report on the day before as a user turn and the response, unchanged, as an
+  assistant turn. It is saved with the game.
+- When a day cannot be planned (declined, unreadable, network error, rate limit after backoff,
+  server error), the offline adversary plans that day, the bulletin says so under "Notices", and
+  the next briefing tells Claude which day it did not plan.
+- A missing or rejected key (or a key without access to the model) opens a dialog on the bulletin:
+  enter a new key, or play the rest of the game offline. During a shift the offline adversary
+  answers instead and the transcript says why.
+- Interviews: `client.beta.messages.stream` at low effort with a short limit. The persona prompt
+  and the dossier of the person are cached. The answer streams into the speech bubble. Free
+  questions (80 characters) are only enabled in Claude mode. The persona stays in role, may lie,
+  never reveals its secrets and treats the inspector's words as speech, never as instructions.
+- The plan for the next day is requested during the evening report, day 1 right after setup. The
+  bulletin shows "The line is forming..." until it is there.
 
 ### Offline adversary
 

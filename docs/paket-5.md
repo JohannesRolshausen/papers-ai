@@ -65,7 +65,40 @@ Offene Punkte und Feinschliff:
 
 ## Infos aus Paket 4
 
-(Wird vom Chat zu Paket 4 ausgefüllt.)
+Dateien:
+
+- `src/ai/claudeAdversary.ts`: der Claude-Gegner (`ClaudeAdversary`, `mode: 'claude'`), Modellliste `CLAUDE_MODELS`, `verifyClaudeKey` (fragt `GET /v1/models/{id}`, kostet nichts), Fehlereinordnung `classifyError`.
+- `src/ai/prompts.ts`: statisches Spielhandbuch für den Planer (`plannerSystemPrompt()`, nur aus Konstanten gebaut, daher cachebar), Persona-Prompt `PERSONA_SYSTEM_PROMPT`, Nachrichten aus Briefing, Beobachtung und Akte.
+- `src/ai/factory.ts`: `createAdversaries(settings, seed, { apiKey, fetch })` liefert jetzt `{ main, fallback, claude }`. Im Claude-Modus ist `main` der Claude-Gegner und `fallback` die Offline-KI, die er auch selbst für ausgefallene Tage nimmt.
+- `src/ui/keyStore.ts` (Key in `sessionStorage`, auf Wunsch in `localStorage`, jeder Zugriff in try/catch), `src/ui/components/keyForm.ts` (Key-Feld, Merken mit Warnhinweis, Modellwahl, Prüfknopf), Setup und Key-Dialog in `src/ui/app.ts`.
+- `src/dev/mockClaude.ts`: Ersatz für `fetch`. Das echte SDK läuft mit, nur die Antworten sind gespielt. Für Unit-Tests und unter `?test&mock=claude` im Browser.
+
+Was im Spielstand steht:
+
+- Der API-Key steht nie im Spielstand. `settings.model` enthält das gewählte Modell.
+- `state.adversaryMemory` im Claude-Modus: `{ version: 1, kind: 'claude', messages, reported, notes, log, offline }`. `messages` ist das ganze Planungsgespräch (Briefing plus Bericht als user, Antwort unverändert als assistant, Paare in Reihenfolge). `log` hat pro Tag `source` (`claude` oder `fallback`), das Modell, das geantwortet hat (kann nach einem Server-Fallback ein anderes sein), und den Grund eines Ausfalls (`refusal`, `invalid`, `network`, `rate_limit`, `api`). `offline` ist das Tagebuch der Offline-KI für die Tage, die sie übernommen hat.
+- `StoredPlan.source` ist `claude` oder `fallback`, `strategy_summary` und `notes_for_future_self` stehen wie bisher im `StoredPlan`. Fürs Debriefing reicht also `GameState.days`, `log` ergänzt das Modell.
+- Das Gespräch wächst mit jedem Tag. Bei 28 Tagen kann der Spielstand deutlich größer werden als offline (grob einige hundert KB). `saveGame` liefert `false`, wenn der Speicher voll ist. Das sollte Paket 5 dem Spieler melden.
+- Fremdes oder kaputtes Gedächtnis erkennt der Claude-Gegner (`isClaudeMemory`) und startet leer. Tage, deren Bericht das Gespräch nicht kennt, bekommt er dann im nächsten Briefing nachgereicht.
+
+Ablauf und Fehler:
+
+- Planer: `client.beta.messages.parse` mit `betaZodOutputFormat(DayPlanSchema)`, adaptivem Thinking, `effort: 'high'`, `max_tokens: 20000`, Server-Fallbacks (`betas: ['server-side-fallback-2026-07-01']`, `fallbacks: 'default'`), System-Prompt und Gesprächsende mit 1-Stunden-Cache. Ablehnung, ungültiges oder abgeschnittenes JSON, Netzwerk- und Serverfehler: Offline-KI für diesen Tag, `notice` im Bulletin unter "Notices", der unbeantwortete Tag kommt nicht ins Gespräch, und das nächste Briefing sagt Claude, welcher Tag offline geplant wurde. `RateLimitError`: bis zu drei Wiederholungen mit `retry-after` oder 2, 4, 8 Sekunden, danach Fallback.
+- Fehlender oder abgelehnter Key, Key ohne Zugriff, Modell nicht verfügbar, Abrechnungsproblem: `planDay` wirft `AdversaryKeyError` (`src/ai/adversary.ts`). Der `DayLoop` gibt diesen Fehler als einzigen nicht an den Fallback, sondern an den Aufrufer. `app.ts` zeigt dann auf dem Bulletin den Dialog "CLAUDE NEEDS AN API KEY": neuen Key prüfen und weiter, oder "Play on offline" (setzt `settings.aiMode` auf `offline` und übernimmt das Offline-Gedächtnis).
+- Verhör: `client.beta.messages.stream`, `effort: 'low'`, `max_tokens: 1024` (Thinking zählt mit), 25 Sekunden Zeitlimit, ohne SDK-Wiederholung. `onText` liefert den bisher gesamten, bereinigten Text. Wirft der Claude-Gegner, antwortet wie bisher die Offline-KI. Nach einem abgelehnten Key fragt er die API in dieser Schicht nicht mehr und meldet das einmal über `onNotice`. Die Kabine zeigt solche Hinweise im Verlauf (`BoothOptions.subscribeNotices`).
+- Vorladen: Tag 1 startet direkt nach dem Setup, der nächste Tag im Evening Report (`prefetchPlan`, war schon da). Der Ladetext bleibt "The line is forming...".
+- Der Titel zeigt bei einem Claude-Spiel "· Claude" hinter dem Spielstand.
+
+Tests:
+
+- `tests/claudeAdversary.test.ts` (20 Fälle mit gemocktem Client: gültige Antwort, ungültiges JSON, Schema-Fehler, Ablehnung, Netzwerk- und Serverfehler, Backoff, Key-Probleme, Gespräch wächst nur durch Anhängen, Speichern und Laden, fremdes Gedächtnis, Streaming, Fallback im Verhör, Key-Prüfung), `tests/keyStore.test.ts`, `tests/prompts.test.ts`.
+- `npm run smoke:claude` spielt Tag 1 im Claude-Modus mit Mock im Browser, dazu Tag 2, Neuladen ohne Key und den Key-Dialog. `window.__oversightMock.calls()` listet unter `?test&mock=claude` alle Anfragen. Für den Gesamttest in Paket 5 lässt sich das mit `--full` nicht kombinieren, der Claude-Teil spielt eigene Tage.
+
+Offen:
+
+- Live-Test mit echtem Key steht aus (im Container gibt es keinen). Dabei prüfen: Reichen 20000 `max_tokens` bei `effort: 'high'` für 16 Personen? Wenn Pläne mit `max_tokens` abbrechen (im Spiel als "could not be read"), auf `client.beta.messages.stream` mit `finalMessage()` und höherem Limit umstellen. Wie lange dauert ein Plan, reicht das Vorladen? Wie schnell kommt die erste Silbe im Verhör? Greift der Cache (`usage.cache_read_input_tokens`)? Was kostet ein Spiel?
+- Debriefing: das Planungsgespräch in `adversaryMemory.messages` enthält jeden vollständigen Plan, `log` zeigt Ausfälle und Server-Fallbacks. Beides kann ins Debriefing.
+- Ton: der gestreamte Text läuft über `speech.stream` in `ask()` in `src/ui/screens/booth.ts`, nicht über `speak()`. Ein Lautsprecher-Geräusch für gestreamte Antworten gehört dorthin.
 
 ## Aufgabe
 

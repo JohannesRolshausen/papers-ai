@@ -10,7 +10,7 @@ import type {
   PlanResult,
   TranscriptLine,
 } from '../ai/adversary'
-import { buildDossier } from '../ai/adversary'
+import { AdversaryKeyError, buildDossier } from '../ai/adversary'
 import { buildBriefing } from '../ai/briefing'
 import { answerQuestion, defaultLeverLine, discrepancyQuestion } from '../ai/dialogueTemplates'
 import type { DayPlan, LineTrigger } from '../ai/schema'
@@ -941,7 +941,8 @@ export class DayLoop {
       .planDay(request)
       .then(checked)
       .catch(async (error: unknown) => {
-        if (!fallback) throw error
+        // A missing or rejected key goes back to the player instead of to the fallback
+        if (!fallback || error instanceof AdversaryKeyError) throw error
         const result = checked(await fallback.planDay(request))
         return {
           plan: result.plan,

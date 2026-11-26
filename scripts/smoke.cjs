@@ -7,6 +7,10 @@
 //   --shots <dir>  saves screenshots of bulletin, booth and evening report there
 //   --full         then plays the remaining days to the final report, with one reload and
 //                  Continue in between, deciding by the ground truth from the test hook
+//   --claude       plays in Claude mode against a scripted stand-in for the API
+//                  (?test&mock=claude): key check, plan from Claude, a streamed free question,
+//                  the plan for day 2 requested during the evening, and the key dialog after
+//                  a reload without a stored key
 
 const { chromium } = require('playwright')
 const path = require('node:path')
@@ -17,6 +21,9 @@ const args = process.argv.slice(2)
 const shotsIndex = args.indexOf('--shots')
 const shotsDir = shotsIndex >= 0 ? path.resolve(args[shotsIndex + 1] ?? 'shots') : null
 const full = args.includes('--full')
+const claude = args.includes('--claude')
+const KEY_ITEM = 'oversight-claude-key'
+const MOCK_KEY = 'sk-ant-mock-key-0001'
 
 function refKey(ref) {
   switch (ref.kind) {
@@ -104,16 +111,31 @@ async function run(url) {
   })
   page.on('pageerror', (e) => errors.push(String(e)))
 
-  await page.goto(`${url}?test&seed=${SEED}`)
-  await page.evaluate(() => localStorage.clear())
+  await page.goto(`${url}?test&seed=${SEED}${claude ? '&mock=claude' : ''}`)
+  await page.evaluate(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+  })
   await page.reload()
   await page.click('text=New game')
   await page.click('[data-difficulty=easy]')
-  await page.click('[data-mode=offline]')
+  if (claude) {
+    await setupClaude(page)
+  } else {
+    await page.click('[data-mode=offline]')
+  }
   await page.click('text=Report for duty')
   await page.waitForSelector('.bulletin-screen')
+  if (claude) {
+    check(
+      (await page.textContent('.bulletin-status')).includes('The line is forming'),
+      'bulletin shows the loading text while Claude plans',
+    )
+  }
+  await page.waitForSelector('[data-action=start-shift]:enabled')
   await shot(page, 'bulletin')
-  check(true, 'offline game started, bulletin shown')
+  check(true, `${claude ? 'Claude' : 'offline'} game started, bulletin shown`)
+  if (claude) await checkClaudeSave(page)
 
   await page.click('[data-action=start-shift]')
   await page.waitForSelector('.booth')
@@ -131,6 +153,7 @@ async function run(url) {
     await page.waitForSelector('.doc[data-applicant]')
     await page.waitForTimeout(200)
 
+    if (claude && processed === 0) await askFree(page)
     let decision = null
     const refs = inspected ? null : await inspectRefs(page)
     if (refs) {
@@ -195,6 +218,8 @@ async function run(url) {
   const phase = await page.evaluate(() => JSON.parse(localStorage.getItem('oversight-save')).phase)
   check(phase === 'evening', 'game saved after the shift')
 
+  if (claude) await claudeEvening(page)
+
   if (full) {
     const days = await page.evaluate(
       () => JSON.parse(localStorage.getItem('oversight-save')).daysTotal,
@@ -236,6 +261,129 @@ async function run(url) {
 
   check(errors.length === 0, `no console errors ${errors.length ? JSON.stringify(errors) : ''}`)
   await browser.close()
+}
+
+// ---------- Claude mode against the scripted stand-in ----------
+
+async function setupClaude(page) {
+  await page.click('[data-mode=claude]')
+  check(await page.isVisible('[data-field=api-key]'), 'Claude mode shows the key field')
+  await page.click('text=Report for duty')
+  check(
+    (await page.textContent('.key-status')).includes('Enter your API key'),
+    'starting without a key asks for one',
+  )
+  await page.fill('[data-field=api-key]', 'sk-ant-invalid-key')
+  await page.click('[data-action=check-key]')
+  await page.waitForSelector('.key-status.error')
+  check(true, `a wrong key is rejected: ${await page.textContent('.key-status')}`)
+  await page.fill('[data-field=api-key]', MOCK_KEY)
+  await page.click('[data-model=claude-sonnet-5-5]')
+  await page.click('[data-action=check-key]')
+  await page.waitForSelector('.key-status.ok')
+  check(true, `the key check passes: ${await page.textContent('.key-status')}`)
+  check(!(await page.isVisible('.key-warning')), 'no storage warning while not remembered')
+  await page.check('[data-field=remember-key]')
+  check(await page.isVisible('.key-warning'), 'remembering the key shows the warning')
+  await page.uncheck('[data-field=remember-key]')
+  await shot(page, 'setup-claude')
+}
+
+async function checkClaudeSave(page) {
+  const info = await page.evaluate((item) => {
+    const raw = localStorage.getItem('oversight-save')
+    const save = JSON.parse(raw)
+    return {
+      source: save.days[0].plan.source,
+      model: save.settings.model,
+      memory: save.adversaryMemory && save.adversaryMemory.kind,
+      turns: save.adversaryMemory ? save.adversaryMemory.messages.length : 0,
+      keyInSave: raw.includes('sk-ant-'),
+      session: sessionStorage.getItem(item),
+      local: localStorage.getItem(item),
+    }
+  }, KEY_ITEM)
+  check(info.source === 'claude', 'day 1 was planned by Claude')
+  check(info.model === 'claude-sonnet-5-5', 'the chosen model is saved')
+  check(info.memory === 'claude' && info.turns === 2, 'the planning conversation is saved')
+  check(!info.keyInSave, 'the API key is not in the save game')
+  check(info.session === MOCK_KEY && info.local === null, 'the key is kept for this tab only')
+}
+
+// A free question goes to Claude and streams into the bubble
+async function askFree(page) {
+  await page.waitForFunction(() => !document.querySelector('.free-input').disabled, null, {
+    timeout: 8000,
+  })
+  check(true, 'free questions are enabled in Claude mode')
+  const before = await page.locator('.tr-applicant').count()
+  const question = 'Who will you visit here?'
+  await page.fill('.free-input', question)
+  await page.press('.free-input', 'Enter')
+  const seen = new Set()
+  for (let i = 0; i < 150; i++) {
+    const text = (await page.textContent('.speech-text')) ?? ''
+    if (text.includes(question)) seen.add(text)
+    if ((await page.locator('.tr-applicant').count()) > before && text.endsWith('papers.')) break
+    await page.waitForTimeout(15)
+  }
+  const final = await page.textContent('.speech-text')
+  check(final.includes(question), `Claude answered the free question: ${final}`)
+  check(seen.size >= 2, `the answer streamed into the bubble (${seen.size} steps)`)
+  const streams = await page.evaluate(
+    () => window.__oversightMock.calls().filter((c) => c.stream).length,
+  )
+  check(streams >= 1, 'the answer came from a streamed request')
+  await shot(page, 'booth-claude')
+}
+
+async function claudeEvening(page) {
+  await page.waitForFunction(
+    () =>
+      window.__oversightMock.calls().filter((c) => c.path === '/v1/messages' && !c.stream).length >=
+      2,
+    null,
+    { timeout: 5000 },
+  )
+  check(true, 'the plan for day 2 was requested during the evening report')
+  await page.click('[data-action=evening-continue]')
+  await page.waitForSelector('[data-action=start-shift]:enabled', { timeout: 5000 })
+  check(true, 'day 2 bulletin ready with the prefetched plan')
+
+  // A new tab without the key: the game asks for it before the next plan
+  await page.evaluate((item) => {
+    sessionStorage.removeItem(item)
+    localStorage.removeItem(item)
+  }, KEY_ITEM)
+  await page.reload()
+  await page.click('text=Continue')
+  await page.waitForSelector('.bulletin-screen')
+  const started = await page.isEnabled('[data-action=start-shift]')
+  if (started) {
+    // Day 2 was already prepared before the reload, the key is needed for day 3
+    await page.click('[data-action=start-shift]')
+    await page.waitForSelector('.booth')
+    await playByTruth(page)
+    await page.click('[data-action=end-shift]')
+    await page.waitForSelector('.evening-screen')
+    await page.click('[data-action=evening-continue]')
+  }
+  await page.waitForSelector('.key-dialog')
+  check(true, 'a missing key opens the key dialog')
+  await page.fill('.key-dialog [data-field=api-key]', 'sk-ant-invalid-key')
+  await page.click('[data-action=key-retry]')
+  await page.waitForSelector('.key-dialog .key-status.error')
+  check(await page.isVisible('.key-dialog'), 'a wrong key keeps the dialog open')
+  await shot(page, 'key-dialog')
+  await page.fill('.key-dialog [data-field=api-key]', MOCK_KEY)
+  await page.click('[data-action=key-retry]')
+  await page.waitForSelector('[data-action=start-shift]:enabled', { timeout: 5000 })
+  check(!(await page.locator('.key-dialog').count()), 'a working key closes the dialog')
+  const source = await page.evaluate(() => {
+    const save = JSON.parse(localStorage.getItem('oversight-save'))
+    return save.days[save.days.length - 1].plan.source
+  })
+  check(source === 'claude', 'the day after the new key was planned by Claude')
 }
 
 async function admissible(page) {

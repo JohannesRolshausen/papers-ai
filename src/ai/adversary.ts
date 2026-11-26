@@ -143,6 +143,20 @@ export interface RespondRequest {
 
 // ---------- The adversary ----------
 
+export type AdversaryKeyProblem = 'missing' | 'auth' | 'permission' | 'model' | 'billing'
+
+// Thrown by planDay when the player has to fix the API key or model before the day can be
+// planned. The controller does not fall back on it, so the interface can ask for a new key.
+export class AdversaryKeyError extends Error {
+  readonly problem: AdversaryKeyProblem
+
+  constructor(problem: AdversaryKeyProblem, message: string) {
+    super(message)
+    this.name = 'AdversaryKeyError'
+    this.problem = problem
+  }
+}
+
 export interface Adversary {
   readonly mode: AiMode
   planDay(request: PlanRequest): Promise<PlanResult>

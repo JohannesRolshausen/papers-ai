@@ -3,6 +3,15 @@
 // The game is saved after every phase.
 
 import './styles.css'
+import { AdversaryKeyError } from '../ai/adversary'
+import type { ClaudeAdversary, ClaudeFetch } from '../ai/claudeAdversary'
+import {
+  CLAUDE_MODELS,
+  DEFAULT_CLAUDE_MODEL,
+  isClaudeMemory,
+  isClaudeModel,
+  verifyClaudeKey,
+} from '../ai/claudeAdversary'
 import { ADVERSARY_MODES, createAdversaries, freeQuestionsEnabled } from '../ai/factory'
 import { DIFFICULTIES } from '../config'
 import type { DayStart } from '../core/dayLoop'
@@ -11,8 +20,12 @@ import type { EveningReport } from '../core/economy'
 import { eveningReport, formatMoney } from '../core/economy'
 import { clearSave, contextForDay, createNewGame, loadGame, saveGame } from '../core/state'
 import type { GameState } from '../core/types'
+import { createScriptedClaudeFetch } from '../dev/mockClaude'
+import type { MockFetch } from '../dev/mockClaude'
+import { createKeyForm } from './components/keyForm'
 import { createTypingTest } from './components/typingTest'
 import { el } from './dom'
+import { loadApiKey, saveApiKey } from './keyStore'
 import type { BulletinScreen } from './screens/bulletin'
 import { bulletinScreen } from './screens/bulletin'
 import { boothScreen } from './screens/booth'
@@ -32,6 +45,28 @@ function exposeTestHook(loop: DayLoop): void {
     current: () => loop.current?.applicant ?? null,
     minute: () => loop.clock,
   }
+}
+
+// Under ?test&mock=claude the Claude adversary talks to a scripted stand-in for the API, so
+// the smoke test can play in Claude mode without a key. Never active in normal play.
+let mock: MockFetch | null | undefined
+function mockFetch(): ClaudeFetch | undefined {
+  if (mock === undefined) {
+    const params = new URLSearchParams(window.location.search)
+    mock =
+      params.has('test') && params.get('mock') === 'claude'
+        ? createScriptedClaudeFetch({ planDelayMs: 900 })
+        : null
+    if (mock) {
+      const calls = mock.calls
+      const target = window as unknown as { __oversightMock: unknown }
+      target.__oversightMock = {
+        calls: () =>
+          calls.map((c) => ({ method: c.method, path: c.path, stream: c.body?.stream === true })),
+      }
+    }
+  }
+  return mock ?? undefined
 }
 
 // Under ?test&seed=N a new game uses that seed, so the smoke test is repeatable
@@ -58,6 +93,9 @@ function morningNotices(day: DayStart): string[] {
 
 class App {
   private loop: DayLoop | null = null
+  private claude: ClaudeAdversary | null = null
+  // The key typed in this tab, in case the browser refuses to store it
+  private sessionKey: string | null = null
   private cleanup: (() => void) | null = null
 
   constructor(private readonly stage: HTMLElement) {}
@@ -74,10 +112,21 @@ class App {
   }
 
   private attach(state: GameState): DayLoop {
-    const { main, fallback } = createAdversaries(state.settings, state.seed)
+    if (!isClaudeModel(state.settings.model)) state.settings.model = DEFAULT_CLAUDE_MODEL
+    const fetch = mockFetch()
+    const { main, fallback, claude } = createAdversaries(state.settings, state.seed, {
+      apiKey: this.sessionKey ?? loadApiKey()?.key ?? null,
+      ...(fetch ? { fetch } : {}),
+    })
+    this.claude = claude
     this.loop = new DayLoop(state, main, { fallback })
     exposeTestHook(this.loop)
     return this.loop
+  }
+
+  private checkKey = (key: string, model: string) => {
+    const fetch = mockFetch()
+    return verifyClaudeKey(key, model, fetch ? { fetch } : {})
   }
 
   title(): void {
@@ -88,7 +137,7 @@ class App {
       titleScreen({
         save: resumable
           ? {
-              label: `${DIFFICULTIES[resumable.difficulty].label} · day ${resumable.dayIndex} of ${resumable.daysTotal} · ${formatMoney(resumable.economy.money)}`,
+              label: `${DIFFICULTIES[resumable.difficulty].label} · day ${resumable.dayIndex} of ${resumable.daysTotal} · ${formatMoney(resumable.economy.money)}${resumable.settings.aiMode === 'claude' ? ' · Claude' : ''}`,
             }
           : null,
         onContinue: () => resumable && this.resume(resumable),
@@ -101,6 +150,10 @@ class App {
     this.show(
       setupScreen({
         modes: ADVERSARY_MODES,
+        models: CLAUDE_MODELS,
+        defaultModel: DEFAULT_CLAUDE_MODEL,
+        storedKey: loadApiKey(),
+        checkKey: this.checkKey,
         onBack: () => this.title(),
         onStart: (choice) => this.newGame(choice),
       }),
@@ -108,9 +161,17 @@ class App {
   }
 
   private newGame(choice: SetupChoice): void {
+    if (choice.aiMode === 'claude' && choice.apiKey) {
+      this.sessionKey = choice.apiKey
+      saveApiKey(choice.apiKey, choice.rememberKey)
+    }
     const state = createNewGame({
       difficulty: choice.difficulty,
-      settings: { aiMode: choice.aiMode, shiftRealSeconds: choice.shiftRealSeconds },
+      settings: {
+        aiMode: choice.aiMode,
+        model: choice.model,
+        shiftRealSeconds: choice.shiftRealSeconds,
+      },
       seed: testSeed(),
     })
     this.attach(state)
@@ -154,9 +215,81 @@ class App {
         screen.setBusy(false)
       })
       .catch((error: unknown) => {
+        if (error instanceof AdversaryKeyError && this.claude) {
+          screen.setBusy(true, 'Claude needs a working API key.')
+          this.askForKey(screen, error)
+          return
+        }
         console.error(error)
         screen.setBusy(true, 'The day could not be prepared. Reload to try again.')
       })
+  }
+
+  // The key is missing or was rejected: enter a new one, or play the rest of the game offline
+  private askForKey(screen: BulletinScreen, error: AdversaryKeyError): void {
+    const loop = this.loop
+    const claude = this.claude
+    if (!loop || !claude) return
+    const stored = loadApiKey()
+    const form = createKeyForm({
+      models: CLAUDE_MODELS,
+      model: claude.model,
+      key: error.problem === 'missing' ? (stored?.key ?? '') : '',
+      remembered: stored?.remembered ?? false,
+      checkKey: this.checkKey,
+    })
+    form.setStatus(error.message, 'error')
+    const retry = el('button', { className: 'btn primary', text: 'Use this key' })
+    retry.type = 'button'
+    retry.dataset.action = 'key-retry'
+    const offline = el('button', { className: 'btn ghost', text: 'Play on offline' })
+    offline.type = 'button'
+    offline.dataset.action = 'key-offline'
+    const layer = el(
+      'div',
+      { className: 'screen-modal' },
+      el(
+        'div',
+        { className: 'dialog key-dialog' },
+        el('div', { className: 'dialog-title', text: 'CLAUDE NEEDS AN API KEY' }),
+        el('div', {
+          className: 'key-dialog-text',
+          text: 'This game plays against Claude. With a working key Claude plans the day. You can also play the rest of this game against the offline adversary.',
+        }),
+        form.root,
+        el('div', { className: 'dialog-buttons' }, offline, retry),
+      ),
+    )
+    retry.addEventListener('click', () => {
+      void (async () => {
+        retry.disabled = true
+        const value = form.value()
+        const result = await form.check()
+        retry.disabled = false
+        if (!result.ok) return
+        this.sessionKey = value.key
+        saveApiKey(value.key, value.remember)
+        claude.setCredentials(value.key, value.model)
+        loop.state.settings.model = value.model
+        layer.remove()
+        this.save()
+        this.morning()
+      })()
+    })
+    offline.addEventListener('click', () => {
+      const state = loop.state
+      state.settings.aiMode = 'offline'
+      // Keep the offline adversary's own memory of the days it planned
+      if (isClaudeMemory(state.adversaryMemory)) {
+        state.adversaryMemory = state.adversaryMemory.offline ?? null
+      }
+      layer.remove()
+      this.attach(state)
+      this.save()
+      this.morning()
+    })
+    screen.root.append(layer)
+    form.focus()
   }
 
   private startShift(screen: BulletinScreen, day: DayStart | null): void {
@@ -195,6 +328,7 @@ class App {
       loop,
       shiftRealSeconds: loop.state.settings.shiftRealSeconds,
       freeQuestions: freeQuestionsEnabled(loop.state.settings),
+      ...(this.claude ? { subscribeNotices: this.claude.onNotice.bind(this.claude) } : {}),
       onShiftOver: () => {
         const report = loop.endShift()
         this.save()

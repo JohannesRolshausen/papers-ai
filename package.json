@@ -14,7 +14,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "sim": "tsx scripts/sim.ts",
-    "smoke": "node scripts/smoke.cjs"
+    "smoke": "node scripts/smoke.cjs",
+    "smoke:claude": "node scripts/smoke.cjs --claude"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.14.0",
