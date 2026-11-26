@@ -27,7 +27,8 @@ import { createStage } from './stage'
 // Never active in normal play.
 function exposeTestHook(loop: DayLoop): void {
   if (!new URLSearchParams(window.location.search).has('test')) return
-  ;(window as unknown as { __oversightTest: unknown }).__oversightTest = {
+  const target = window as unknown as { __oversightTest: unknown }
+  target.__oversightTest = {
     current: () => loop.current?.applicant ?? null,
     minute: () => loop.clock,
   }

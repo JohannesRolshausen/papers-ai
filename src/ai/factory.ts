@@ -1,5 +1,5 @@
 // Adversary factory: which adversary plays the queue for a game.
-// Package 4 adds the Claude adversary here; until then every game plays offline.
+// Package 4 adds the Claude adversary here. Until then every game plays offline.
 
 import type { AiMode, Settings } from '../core/types'
 import type { Adversary } from './adversary'

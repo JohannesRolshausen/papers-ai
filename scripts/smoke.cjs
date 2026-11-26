@@ -63,7 +63,7 @@ async function inspectRefs(page) {
 async function stamp(page, decision) {
   const stampButton = `[data-action=stamp-${decision}]`
   await page.click(stampButton)
-  // The person may interrupt the first stamp with last words; then stamp again
+  // The person may interrupt the first stamp with last words, then stamp again
   for (let attempt = 0; attempt < 3; attempt++) {
     await page.click(stampButton)
     try {

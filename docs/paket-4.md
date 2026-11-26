@@ -52,7 +52,44 @@ Offen geblieben: Der Controller reicht `onText` nur durch. Die Offline-KI ruft e
 
 ## Infos aus Paket 3
 
-(Wird vom Chat zu Paket 3 ausgefüllt: Setup-Bildschirm, Adversary-Fabrik, Sprechblase mit Streaming, freie Frage.)
+Die Oberfläche liegt in `src/ui`, ohne Framework. `src/ui/app.ts` steuert die Bildschirme und hält den `DayLoop`. Die Kabine (`src/ui/screens/booth.ts`) ruft nur Methoden des `DayLoop` auf, Spielregeln stehen dort nicht.
+
+Adversary-Fabrik (`src/ai/factory.ts`):
+
+- `createAdversaries(settings, seed)` liefert `{ main, fallback }`. `app.ts` baut damit `new DayLoop(state, main, { fallback })`. Heute liefern beide Modi die Offline-KI. Hier kommt der Claude-Gegner hinein, die Offline-KI bleibt `fallback`.
+- Die Fabrik bekommt nur `Settings` und den Seed. Der API-Key steht nicht im Spielstand. Er muss also zusätzlich hineingereicht werden, zum Beispiel als drittes Argument aus `sessionStorage`.
+- `ADVERSARY_MODES` beschreibt die Karten im Setup. Claude ist sichtbar, aber `available: false` mit dem Hinweis "Coming in a later update. Needs your own API key." Für Paket 4 auf `true` stellen (oder abhängig vom geprüften Key).
+- `freeQuestionsEnabled(settings)` schaltet das Feld für freie Fragen frei. Heute nur bei `aiMode: 'claude'` und verfügbarem Claude-Modus.
+
+Setup (`src/ui/screens/setup.ts`):
+
+- Drei Zeilen: Schwierigkeit, Gegner (`data-mode="offline"` oder `"claude"`), Schichtlänge (6, 9, 12, 15 Minuten echt). `onStart` liefert `SetupChoice { difficulty, aiMode, shiftRealSeconds }`, `app.ts` baut daraus `createNewGame`.
+- Key-Feld, Modellwahl und Prüfknopf fehlen noch. Sie gehören in die Claude-Karte oder darunter. `SetupChoice` um `model` erweitern, `Settings.model` gibt es schon.
+
+Latenz und Ladezustand:
+
+- `app.ts` zeigt das Bulletin sofort (Inhalt aus `contextForDay`) und ruft gleichzeitig `loop.startDay()`. Bis der Plan da ist, ist "Open the booth" gesperrt und daneben steht "The line is forming...". Tag 1 läuft genauso direkt nach dem Setup.
+- Im Evening Report ruft `app.ts` schon `loop.prefetchPlan()` auf.
+- `DayStart.notice` und die morgens eingetroffenen Folgen erscheinen auf dem Bulletin unter "Notices". Ein Fallback auf die Offline-KI wird dem Spieler also schon angezeigt.
+- Schlägt `startDay()` fehl, steht auf dem Bulletin "The day could not be prepared. Reload to try again." Weil der `DayLoop` jeden Fehler des Planers an den `fallback` gibt, kommt ein `AuthenticationError` heute nicht bis zur Oberfläche. Für "zurück zur Key-Eingabe" braucht es einen eigenen Weg, zum Beispiel einen Fehlerzustand am Claude-Gegner, den `app.ts` nach `startDay()` abfragt.
+
+Sprechblase und Streaming (`src/ui/screens/booth.ts`, Funktion `ask`):
+
+- `loop.ask(request, onText)` bekommt einen `onText`-Callback. Ruft der Gegner `onText` mehr als einmal auf, zeigt die Blase den Teiltext live (`speech.stream`) und die fertige Antwort wird nicht noch einmal getippt. Bei nur einem Aufruf (Offline-KI) läuft die Schreibmaschine.
+- Wichtig: `onText` muss den bisher gesamten Text liefern, nicht nur das neue Stück. Die Blase ersetzt ihren Inhalt bei jedem Aufruf.
+- Während eine Antwort läuft, sind alle Knöpfe am Schalter gesperrt. Die Uhr läuft weiter.
+- Alle Texte der KI gehen über `textContent` in Blase, Verlauf, Dokumente und Briefe.
+
+Freie Frage:
+
+- Eingabefeld unter den Standardfragen, `maxlength` 80, Enter oder "Ask". Offline ist es gesperrt mit dem Hinweis "Free questions need the Claude adversary." Freischalten über `freeQuestionsEnabled`, sonst ist nichts zu tun. Der Text geht als `{ kind: 'free', text }` an `loop.ask`.
+
+Tests im Browser:
+
+- `npm run smoke` baut das Spiel, startet `vite preview` und spielt Tag 1 mit Playwright (`scripts/smoke.cjs`). `--full` spielt bis zum Final Report, `--shots <dir>` macht Screenshots.
+- Unter `?test` legt `app.ts` `window.__oversightTest` an (`current()` liefert die Person am Fenster mit Wahrheit, `minute()` die Uhr). `?test&seed=N` legt den Seed eines neuen Spiels fest.
+- Für einen Claude-Durchlauf mit gemocktem Client lässt sich das Skript kopieren und `[data-mode=claude]` statt `[data-mode=offline]` klicken. Den Mock am einfachsten in der Fabrik einhängen, etwa über einen weiteren Query-Parameter, der nur zusammen mit `?test` wirkt.
+- Nützliche Selektoren: `[data-action=start-shift]`, `[data-action=call-next]`, `[data-action=inspect]`, `[data-tool=registry]`, `[data-question=purpose]`, `[data-question=discrepancy]`, `.free-input`, `[data-action=stamp-approve]`, `[data-action=stamp-deny]`, `[data-action=end-shift]`, `[data-action=evening-continue]`, `.speech-text`, `.tr-applicant`.
 
 ## Aufgabe
 

@@ -50,10 +50,8 @@ describe('portrait renderer', () => {
       const part = rng.pick(CORE_PARTS)
       const range = FACE_RANGES[part as keyof typeof FACE_RANGES]
       const other = { ...base, [part]: (base[part] + rng.int(1, range - 1)) % range }
-      const style: Partial<FaceSpec> = {}
-      for (const s of STYLE_PARTS) {
-        ;(style as Record<string, number>)[s] = rng.int(0, FACE_RANGES[s] - 1)
-      }
+      const style: Record<string, number> = {}
+      for (const s of STYLE_PARTS) style[s] = rng.int(0, FACE_RANGES[s] - 1)
       // Live face with any style against a photo-styled version of the other face
       const live = portraitPixels(withStyle(base, style))
       const liveOther = portraitPixels(withStyle(other, style))

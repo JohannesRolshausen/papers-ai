@@ -10,14 +10,15 @@ your blind spots, trust gets built and then abused, and feedback arrives late or
 
 ## Status
 
-Packages 1 and 2 of 5 are done: the rules engine, the contract with the adversary, the complete
-game logic without an interface and the rule-based offline adversary.
+Packages 1 to 3 of 5 are done: the rules engine, the contract with the adversary, the complete
+game logic, the rule-based offline adversary and the playable interface in the browser. A full game
+can be played offline from the title screen to the final report.
 
 | Package            | Content                                                                             | Status |
 | ------------------ | ----------------------------------------------------------------------------------- | ------ |
 | 1 Foundation       | World data, documents, rules, validator, materializer, plan schema, fairness tests  | done   |
 | 2 Game logic       | Day loop, clock, economy, consequences, observations, offline adversary, simulation | done   |
-| 3 Interface        | Booth, desk, rulebook, inspect mode, stamps, portraits, seals, typing test          | open   |
+| 3 Interface        | Booth, desk, rulebook, inspect mode, stamps, portraits, seals, typing test          | done   |
 | 4 Claude adversary | Day planner, live interrogation, API key setup, error handling                      | open   |
 | 5 Integration      | Debrief, save and load, sound, end-to-end test                                      | open   |
 
@@ -43,9 +44,20 @@ npm run build
 npm run sim
 ```
 
-`npm run dev` currently opens an engine inspector: a development view that plays the days before
-the chosen one with a bot, then shows the offline adversary's plan and every person with the ground
-truth visible.
+```bash
+npm run smoke
+```
+
+`npm run dev` opens the game. Two development views stay reachable: `?dev` opens the engine
+inspector, which plays the days before the chosen one with a bot and then shows the offline
+adversary's plan and every person with the ground truth visible. `?gallery` shows every face part
+and seal variant side by side.
+
+`npm run smoke` builds the game, serves it with `vite preview` and plays day 1 of an Easy game in
+Chromium through Playwright: one inspection with a hit, one deep check with a typed line (including
+a typo that must be corrected), APPROVE and DENY, the evening report, the save, no console errors.
+`--full` plays on to the final report with one reload and Continue in between. `--shots <dir>`
+saves screenshots of bulletin, booth and evening report (see `docs/screenshots`).
 
 `npm run sim` plays complete games against the offline adversary for every difficulty with three
 bot players (perfect, average, careless) and prints how many infiltrators got through. Options:
@@ -88,6 +100,30 @@ error if the perfect bot lets someone through or gets fired, or if a plan needed
    (`src/core/economy.ts`).
 5. `buildObservation` (`src/core/observations.ts`) turns the closed day into what the adversary
    learns the next morning.
+
+### The interface
+
+`src/ui` holds the browser interface: plain TypeScript and DOM, no framework. It shows what `DayLoop`
+reports and sends the player's actions back to it. Game rules live only in `src/core`.
+
+- `app.ts` runs the screen flow (title, setup, bulletin, booth, evening, final report or dismissal)
+  and saves after every phase. `src/ai/factory.ts` picks the adversary for a game.
+- `screens/` holds one module per screen. `booth.ts` is the main screen: top bar with day, clock,
+  savings and the line, the window with portrait, height chart, scale, luggage and speech bubble,
+  the transcript and questions, the desk with draggable papers, rulebook, bulletin and calendar,
+  the tool bar and the stamps.
+- `components/` holds the pieces: pixel portraits (`portrait.ts`, 32x40 from a `FaceSpec`, sepia for
+  photos), seals (`seal.ts`), documents with inspect refs, rulebook, bulletin sheet, typing test,
+  speech bubble, queue and clock.
+- Everything sits on a fixed 1280x800 stage that is scaled to the window (`stage.ts`).
+- Text from the adversary (lines, letters, names) is always set with `textContent`.
+
+Controls: `I` toggles inspect mode, `P` pauses, `Esc` puts a stamp down or leaves inspect mode.
+In inspect mode, click two things that should agree. A rule on its own can reveal a missing
+document. A stamp is picked up with one click and pressed onto a document with the next.
+
+`tests/render.test.ts` checks that every face part and every seal attribute renders differently,
+also as a sepia photo and under any hair, beard, glasses and hat.
 
 ### Consequences
 

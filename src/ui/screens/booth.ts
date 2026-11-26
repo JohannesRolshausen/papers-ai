@@ -247,7 +247,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const canDrag = () => !inspecting && !armed
   const topDeskZ = () =>
     Math.max(0, ...[...deskArea.children].map((c) => Number((c as HTMLElement).style.zIndex || 0)))
-  // Rulebook and bulletin can be put away to make room; on day 1 both start open
+  // Rulebook and bulletin can be put away to make room. On day 1 both start open.
   const panels = [
     { node: rulebook.root, left: 356, top: 222, label: 'Rulebook' },
     { node: bulletin, left: 404, top: 8, label: 'Bulletin' },
@@ -866,7 +866,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       return
     }
     if (result.status === 'interrupted') {
-      // The person has something to say first; the stamp stays in hand
+      // The person has something to say first, the stamp stays in hand
       busy = true
       refreshAll()
       stampHint.textContent = 'They have something to say. Stamp again to decide.'
