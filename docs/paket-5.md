@@ -17,6 +17,13 @@ Du arbeitest am Spiel OVERSIGHT im Repo `johannesrolshausen/papers-ai`. Der Gesa
 - Wahre Identität: `world.persons[applicant.personId]`.
 - `saveGame`, `loadGame`, `clearSave` in `src/core/state.ts` kapseln den Speicher mit try/catch.
 
+## Infos aus Paket 2
+
+- Pro Person steht in `DayRecord.outcomes` die Entscheidung, `documentedReason`, `minutesSpent`, `bribeAccepted`, `reported`, `correct` und alle `actions`. Tiefenprüfungen und Incident Reports haben `chars`, `typedMs` und `typos`. Daraus kommen Tippgenauigkeit und Anschläge pro Minute (`charsPerMinute` in `src/core/docLines.ts`).
+- `DayRecord.events` enthält morgens eingetroffene Folgen und abendliche Ereignisse (Umschläge). Folgen mit Fälligkeit nach dem letzten Tag werden gar nicht erst angelegt. Ob ein durchgelassener Infiltrator je aufgefallen wäre, zeigt also nur die Wahrheit im Debriefing.
+- Die Offline-KI führt ein Tagebuch (`OfflineAdversary.journal`, gespeichert in `state.adversaryMemory`): Phase, Strategie, Notizen, Platz des Hauptversuchs, Ausgaben pro Tag. `strategy_summary` und `notes_for_future_self` stehen außerdem in jedem `StoredPlan`.
+- `simulateGame(seed, difficulty, bot)` aus `src/dev/simulation.ts` spielt ein ganzes Spiel ohne Oberfläche und eignet sich als Grundlage für den Gesamttest.
+
 ## Infos aus Paket 3
 
 (Wird vom Chat zu Paket 3 ausgefüllt.)

@@ -1,20 +1,19 @@
 // Typing test for documentation lines. Wrong characters show in red and must be corrected
 // before the form can be filed. The game clock keeps running meanwhile.
+// Correctness comes from compareTyping in the engine, the same check the controller applies.
 
+import { compareTyping } from '../../core/docLines'
+import type { TypingResult } from '../../core/docLines'
 import { el } from '../dom'
-
-export interface TypingResult {
-  typed: string
-  typedMs: number
-  typos: number
-}
 
 export interface TypingTestOptions {
   title: string
   line: string
   note?: string
+  // Cancelling is not offered for forms that must be filed, such as supervisor reviews
+  cancellable?: boolean
   onDone(result: TypingResult): void
-  onCancel(): void
+  onCancel?(): void
 }
 
 export interface TypingTest {
@@ -24,6 +23,7 @@ export interface TypingTest {
 
 export function createTypingTest(options: TypingTestOptions): TypingTest {
   const { line } = options
+  const cancellable = options.cancellable ?? true
   const input = el('input', {
     className: 'tt-input',
     attrs: {
@@ -53,44 +53,54 @@ export function createTypingTest(options: TypingTestOptions): TypingTest {
 
   const render = () => {
     const value = input.value
+    const result = compareTyping(line, value)
     chars.forEach((span, i) => {
-      const typed = value[i]
+      const state = result.states[i]
       const target = line[i] ?? ''
       span.className = 'tt-char'
-      if (typed === undefined) {
-        span.textContent = target
-        if (i === value.length) span.classList.add('caret')
-      } else if (typed === target) {
+      if (state === 'correct') {
         span.textContent = target
         span.classList.add('ok')
-      } else {
+      } else if (state === 'wrong') {
+        const typed = value[i] ?? ''
         // Show what was typed, a visible mark for a wrong space
         span.textContent = typed === ' ' ? '_' : typed
         span.classList.add('bad')
+      } else {
+        span.textContent = target
+        if (i === value.length) span.classList.add('caret')
       }
     })
-    const errors = [...value].some((ch, i) => ch !== line[i])
     typosLabel.textContent = `Typos: ${typos}`
     progress.textContent = `${value.length} / ${line.length}`
-    fileButton.disabled = value !== line
-    display.classList.toggle('has-errors', errors)
+    fileButton.disabled = !result.complete
+    display.classList.toggle('has-errors', result.typos > 0)
+    return result
   }
 
   const finish = () => {
-    if (finished || input.value !== line) return
+    if (finished || !compareTyping(line, input.value).complete) return
     finished = true
     options.onDone({
-      typed: input.value,
-      typedMs: startedAt ? Math.round(performance.now() - startedAt) : 0,
+      text: input.value,
+      ms: startedAt ? Math.round(performance.now() - startedAt) : 0,
       typos,
     })
+  }
+
+  const cancel = () => {
+    if (finished || !cancellable) return
+    finished = true
+    options.onCancel?.()
   }
 
   input.addEventListener('input', () => {
     const value = input.value
     if (!startedAt && value.length > 0) startedAt = performance.now()
+    // Count every wrong keystroke, even if it is corrected later
     if (value.length > previous.length) {
-      for (let i = previous.length; i < value.length; i++) if (value[i] !== line[i]) typos += 1
+      const states = compareTyping(line, value).states
+      for (let i = previous.length; i < value.length; i++) if (states[i] !== 'correct') typos += 1
     }
     previous = value
     render()
@@ -104,18 +114,11 @@ export function createTypingTest(options: TypingTestOptions): TypingTest {
       finish()
     } else if (e.key === 'Escape') {
       e.preventDefault()
-      if (!finished) {
-        finished = true
-        options.onCancel()
-      }
+      cancel()
     }
   })
   fileButton.addEventListener('click', finish)
-  cancelButton.addEventListener('click', () => {
-    if (finished) return
-    finished = true
-    options.onCancel()
-  })
+  cancelButton.addEventListener('click', cancel)
 
   const root = el(
     'div',
@@ -125,7 +128,14 @@ export function createTypingTest(options: TypingTestOptions): TypingTest {
     el('div', { className: 'tt-label', text: 'Type the line exactly. Corrections required.' }),
     display,
     input,
-    el('div', { className: 'tt-foot' }, typosLabel, progress, cancelButton, fileButton),
+    el(
+      'div',
+      { className: 'tt-foot' },
+      typosLabel,
+      progress,
+      cancellable ? cancelButton : null,
+      fileButton,
+    ),
   )
   // Clicking anywhere on the form keeps the keyboard on the input
   root.addEventListener('pointerdown', (e) => {

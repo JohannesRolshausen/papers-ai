@@ -10,12 +10,13 @@ your blind spots, trust gets built and then abused, and feedback arrives late or
 
 ## Status
 
-Package 1 of 5 is done: the rules engine and the contract between engine and adversary.
+Packages 1 and 2 of 5 are done: the rules engine, the contract with the adversary, the complete
+game logic without an interface and the rule-based offline adversary.
 
 | Package            | Content                                                                             | Status |
 | ------------------ | ----------------------------------------------------------------------------------- | ------ |
 | 1 Foundation       | World data, documents, rules, validator, materializer, plan schema, fairness tests  | done   |
-| 2 Game logic       | Day loop, clock, economy, consequences, observations, offline adversary, simulation | open   |
+| 2 Game logic       | Day loop, clock, economy, consequences, observations, offline adversary, simulation | done   |
 | 3 Interface        | Booth, desk, rulebook, inspect mode, stamps, portraits, seals, typing test          | open   |
 | 4 Claude adversary | Day planner, live interrogation, API key setup, error handling                      | open   |
 | 5 Integration      | Debrief, save and load, sound, end-to-end test                                      | open   |
@@ -38,8 +39,18 @@ npm test
 npm run build
 ```
 
-`npm run dev` currently opens an engine inspector: a development view that shows a generated day
-with the ground truth visible.
+```bash
+npm run sim
+```
+
+`npm run dev` currently opens an engine inspector: a development view that plays the days before
+the chosen one with a bot, then shows the offline adversary's plan and every person with the ground
+truth visible.
+
+`npm run sim` plays complete games against the offline adversary for every difficulty with three
+bot players (perfect, average, careless) and prints how many infiltrators got through. Options:
+`--seeds 4`, `--from 1`, `--difficulty easy,hard`, `--bots perfect,careless`. It exits with an
+error if the perfect bot lets someone through or gets fired, or if a plan needed corrections.
 
 ## How the engine works
 
@@ -58,6 +69,45 @@ with the ground truth visible.
 5. `validateApplicant` (`src/core/validator.ts`) is the only source of truth. It computes every
    violation from data and lists the evidence for each: which pair of fields to compare in inspect
    mode, or which deep check (registry, fingerprints, body scan, letter verification) reveals it.
+
+### How a day runs
+
+`DayLoop` in `src/core/dayLoop.ts` runs the game without any DOM.
+
+1. `startDay()` asks the adversary for a plan (`prefetchPlan()` can start that early), grants the
+   daily budget, builds the people and applies consequences that are due this morning: time lost
+   to a supervisor review, a sabotaged tool, fines.
+2. `beginShift()` opens the booth at 06:00. Time runs in game minutes. The interface converts real
+   seconds with `advanceClock(minutes)`, every action with a fixed cost advances the clock itself.
+3. `callNext()`, `inspect(keys)`, `ask(question)`, `openForm(kind)` plus `deepCheck(form, typing)`
+   or `reportIncident(form, typing)`, `acceptBribe()`, `refuseBribe()` and `decide(decision)` are
+   the player's actions. Deep checks and incident reports need the documentation line typed without
+   errors (`src/core/docLines.ts`). The lines grow longer as the days go on.
+4. At 18:00 the shift is over. `endShift()` pays wages, charges living costs, schedules
+   consequences (`src/core/consequences.ts`) and decides between evening, final report and dismissal
+   (`src/core/economy.ts`).
+5. `buildObservation` (`src/core/observations.ts`) turns the closed day into what the adversary
+   learns the next morning.
+
+### Consequences
+
+| Event                                              | Consequence                                                 |
+| -------------------------------------------------- | ----------------------------------------------------------- |
+| Wrongly denied legit traveler                      | 40% chance of a complaint and a fine the next day           |
+| Admitted infiltrator                               | 30% chance per following day of a late discovery and a fine |
+| Real bribe taken and person approved               | Money now, 35% chance of an audit with a double fine        |
+| Real threat, denied and not reported               | A deep check tool slowed or broken next day, or a fine      |
+| Real complaint, denied without a documented reason | 30 minutes lost to a supervisor review next morning         |
+| Empty lever                                        | Never anything                                              |
+
+### Offline adversary
+
+`src/ai/offlineAdversary.ts` counts how often the inspector uses each tool on its people and picks
+techniques whose evidence only rarely used tools reveal. Early days probe with cheap attempts and
+obvious decoys, middle days introduce regulars who return honestly, late days spend the saved
+budget, turn the trusted regulars or send strangers with their papers. The main attempt goes where
+the inspector is short of time. Answers in the interview come from templates in
+`src/ai/dialogueTemplates.ts` and stick to what the papers claim.
 
 ### Fairness guarantee
 

@@ -1822,3 +1822,25 @@ html.gallery-page body {
 .panel-btn {
   white-space: nowrap;
 }
+
+.dialog-warning {
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  background: var(--amber);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.env-status {
+  font-size: 12px;
+  text-align: center;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+
+.screen-modal {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 9, 8, 0.6);
+  z-index: 50;
+}

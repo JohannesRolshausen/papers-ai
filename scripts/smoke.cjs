@@ -57,11 +57,21 @@ async function inspectRefs(page) {
 }
 
 async function stamp(page, decision) {
-  await page.click(`[data-action=stamp-${decision}]`)
-  await page.click(`[data-action=stamp-${decision}]`)
-  await page.waitForFunction(() => !document.querySelector('.doc[data-applicant]'), null, {
-    timeout: 15000,
-  })
+  const stampButton = `[data-action=stamp-${decision}]`
+  await page.click(stampButton)
+  // The person may interrupt the first stamp with last words; then stamp again
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.click(stampButton)
+    try {
+      await page.waitForFunction(() => !document.querySelector('.doc[data-applicant]'), null, {
+        timeout: 6000,
+      })
+      return
+    } catch {
+      // Still at the window, try the stamp once more
+    }
+  }
+  throw new Error(`Smoke test failed: could not stamp ${decision}`)
 }
 
 async function openPanelFor(page, key) {

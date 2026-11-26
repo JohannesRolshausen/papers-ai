@@ -53,11 +53,6 @@ export function formatMinute(minute: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
 }
 
-export function formatMoney(amount: number): string {
-  const sign = amount < 0 ? '-' : ''
-  return `${sign}${Math.abs(Math.round(amount))} cr`
-}
-
 export function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }

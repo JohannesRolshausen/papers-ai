@@ -119,7 +119,7 @@ export function leverTokensFor(days: number): number {
 export const ECONOMY = {
   startingMoney: 40,
   payPerApplicant: 6,
-  errorFine: 15,
+  errorFine: 20,
   livingCost: 25,
   debtDaysToFire: 2,
   bribeAuditChance: 0.35,
@@ -158,3 +158,16 @@ export const TEXT_LIMITS = {
 } as const
 
 export const OFFICER_ID = '4471'
+export const BOOTH_ID = '7'
+
+// Free questions are short, the interface enforces the same limit
+export const FREE_QUESTION_MAX_LENGTH = 80
+
+export const CONSEQUENCES = {
+  // A real threat after an unreported denial: sabotage of a deep check tool, otherwise a fine
+  threatSabotageChance: 0.65,
+  // Share of sabotage that takes the tool out completely instead of slowing it down
+  sabotageDownChance: 0.4,
+  sabotageSlowFactor: 2,
+  threatFine: 20,
+} as const

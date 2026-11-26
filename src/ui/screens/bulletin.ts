@@ -4,14 +4,13 @@
 import { formatDocDate } from '../../core/dates'
 import { ruleTitle } from '../../core/rules'
 import type { DayContext } from '../../core/types'
-import { el, formatMoney } from '../dom'
+import { formatMoney } from '../../core/economy'
+import { el } from '../dom'
 import { bindingNotice, newThingsText, wantedCard } from '../components/bulletin'
 
 export interface BulletinScreenOptions {
   ctx: DayContext
   money: number
-  notices: string[]
-  busy: boolean
   onStart(): void
 }
 
@@ -27,6 +26,8 @@ const TUTORIAL = [
 export interface BulletinScreen {
   root: HTMLElement
   setBusy(busy: boolean, text?: string): void
+  // Morning news arrives once the day is prepared: consequences, planner notices, savings
+  setMorning(notices: string[], money: number): void
 }
 
 export function bulletinScreen(options: BulletinScreenOptions): BulletinScreen {
@@ -38,13 +39,18 @@ export function bulletinScreen(options: BulletinScreenOptions): BulletinScreen {
   start.addEventListener('click', options.onStart)
   const status = el('div', { className: 'bulletin-status' })
 
-  const setBusy = (busy: boolean, text = 'The queue is forming...') => {
+  const setBusy = (busy: boolean, text = 'The line is forming...') => {
     start.disabled = busy
     status.textContent = busy ? text : ''
   }
-  setBusy(options.busy)
+  setBusy(true)
 
   const changes = [...b.changes, ...newThingsText(b)]
+  const noticeBox = el('div', { className: 'bn-notice-box' })
+  const moneyLabel = el('div', {
+    className: 'bn-money',
+    text: `Savings: ${formatMoney(options.money)}`,
+  })
   const left = el(
     'div',
     { className: 'bn-col' },
@@ -52,14 +58,7 @@ export function bulletinScreen(options: BulletinScreenOptions): BulletinScreen {
     changes.length > 0
       ? el('ul', { className: 'bn-list' }, ...changes.map((c) => el('li', { text: c })))
       : el('div', { className: 'bn-text', text: 'No changes.' }),
-    options.notices.length > 0 ? el('div', { className: 'bn-label', text: 'Notices' }) : null,
-    options.notices.length > 0
-      ? el(
-          'ul',
-          { className: 'bn-list bn-notices' },
-          ...options.notices.map((n) => el('li', { text: n })),
-        )
-      : null,
+    noticeBox,
     ctx.dayIndex === 1 ? el('div', { className: 'bn-label', text: 'First shift' }) : null,
     ctx.dayIndex === 1
       ? el(
@@ -116,13 +115,16 @@ export function bulletinScreen(options: BulletinScreenOptions): BulletinScreen {
       el('div', { className: 'bn-headline', text: b.headline }),
       el('div', { className: 'bn-columns' }, left, middle, right),
     ),
-    el(
-      'div',
-      { className: 'bn-footer' },
-      el('div', { className: 'bn-money', text: `Savings: ${formatMoney(options.money)}` }),
-      status,
-      start,
-    ),
+    el('div', { className: 'bn-footer' }, moneyLabel, status, start),
   )
-  return { root, setBusy }
+  const setMorning = (notices: string[], money: number) => {
+    moneyLabel.textContent = `Savings: ${formatMoney(money)}`
+    noticeBox.replaceChildren()
+    if (notices.length === 0) return
+    noticeBox.append(
+      el('div', { className: 'bn-label', text: 'Notices' }),
+      el('ul', { className: 'bn-list bn-notices' }, ...notices.map((n) => el('li', { text: n }))),
+    )
+  }
+  return { root, setBusy, setMorning }
 }

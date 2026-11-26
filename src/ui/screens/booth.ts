@@ -1,11 +1,23 @@
-// The booth: the main shift screen. It shows what the shift controller reports and sends the
-// player's actions back to it. No game rules are decided here.
+// The booth: the main shift screen. It shows what the shift controller (DayLoop) reports and
+// sends the player's actions back to it. No game rules are decided here.
 
 import type { DeepToolId } from '../../config'
-import { DEEP_CHECK_MINUTES, DEEP_TOOL_IDS, SHIFT, TOOL_NAMES } from '../../config'
+import { DEEP_TOOL_IDS, SHIFT, TOOL_NAMES } from '../../config'
 import { formatDocDate } from '../../core/dates'
+import type {
+  BoothSession,
+  LoopEvent,
+  OpenForm,
+  QuestionRequest,
+  SpokenLine,
+} from '../../core/dayLoop'
+import type { DayLoop } from '../../core/dayLoop'
+import { STANDARD_QUESTIONS } from '../../core/dayLoop'
+import { FORM_TITLES, REASON_CHOICES, reasonFromCode } from '../../core/docLines'
+import type { TypingResult } from '../../core/docLines'
 import { DOC_TITLES, isNumbered } from '../../core/documents'
-import type { Applicant, Decision, IncidentKind } from '../../core/types'
+import { formatMoney } from '../../core/economy'
+import type { Decision, IncidentKind, StandardQuestion, ViolationCode } from '../../core/types'
 import { bulletinSheet, calendarItem } from '../components/bulletin'
 import { renderDocument, renderReportSlip } from '../components/document'
 import { portraitCanvas } from '../components/portrait'
@@ -13,14 +25,14 @@ import { createClockView, createQueue } from '../components/queue'
 import { createRulebook } from '../components/rulebook'
 import { createSpeech, createTranscript } from '../components/speech'
 import { createTypingTest } from '../components/typingTest'
-import { el, formatMinute, formatMoney, hashText } from '../dom'
-import type { ShiftPort, ShiftQuestion, SpokenLines } from '../shiftPort'
-import { DEEP_CHECK_REASONS, STANDARD_QUESTIONS } from '../shiftPort'
+import { el, formatMinute, hashText } from '../dom'
 import { bringToFront, makeDraggable, placeAt } from '../stage'
 
 export interface BoothOptions {
-  port: ShiftPort
+  loop: DayLoop
   shiftRealSeconds: number
+  freeQuestions: boolean
+  // Called once the player leaves the booth after the shift is over
   onShiftOver(): void
 }
 
@@ -28,6 +40,14 @@ export interface BoothScreen {
   root: HTMLElement
   destroy(): void
 }
+
+const QUESTIONS: { kind: StandardQuestion; label: string }[] = [
+  { kind: 'purpose', label: 'Purpose' },
+  { kind: 'duration', label: 'Length of stay' },
+  { kind: 'stay', label: 'Accommodation' },
+  { kind: 'occupation', label: 'Occupation' },
+  { kind: 'origin', label: 'Coming from' },
+]
 
 const INCIDENTS: { kind: IncidentKind; label: string }[] = [
   { kind: 'threat', label: 'Threat against an officer' },
@@ -57,9 +77,12 @@ const RULER_MIN = 140
 const RULER_MAX = 210
 const RULER_PX = 3.6
 
+type Choice = { label: string; value: string }
+
 export function boothScreen(options: BoothOptions): BoothScreen {
-  const { port } = options
-  const ctx = port.context
+  const { loop } = options
+  const ctx = loop.context
+  if (!ctx) throw new Error('The booth needs a started day')
 
   // ---------- State of the screen ----------
   let paused = false
@@ -68,15 +91,19 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   let busy = false
   let inspecting = false
   let selected: string[] = []
-  let discrepancy: { code: string; message: string } | null = null
   let armed: Decision | null = null
-  let decided = false
   let lastFrame = performance.now()
   let carry = 0
   let raf = 0
   const minutesPerSecond = (SHIFT.endMinute - SHIFT.startMinute) / options.shiftRealSeconds
   const applicantItems: HTMLElement[] = []
+  let envelope: HTMLElement | null = null
   let slipCount = 0
+
+  const session = (): BoothSession | null => {
+    const s = loop.current
+    return s && !s.closed ? s : null
+  }
 
   // ---------- Top bar ----------
   const clock = createClockView()
@@ -122,11 +149,12 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const heightMarker = el('div', { className: 'height-marker hidden' })
   ruler.append(heightMarker)
   const personSlot = el('div', { className: 'person-slot' })
+  const scaleValue = el('div', { className: 'scale-value', text: '-- kg' })
   const scaleView = el(
     'div',
     { className: 'scale-view', ref: 'person:weight' },
     el('div', { className: 'scale-label', text: 'SCALE' }),
-    el('div', { className: 'scale-value', text: '-- kg' }),
+    scaleValue,
   )
   const shutter = el('div', { className: 'shutter', text: 'NEXT PLEASE' })
   speech.root.classList.add('window-speech')
@@ -140,19 +168,24 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     shutter,
     speech.root,
   )
+  const luggageItems = el('span', { className: 'luggage-items', text: '-' })
   const luggage = el(
     'div',
     { className: 'luggage', ref: 'person:luggage' },
     el('span', { className: 'tb-label', text: 'Luggage' }),
-    el('span', { className: 'luggage-items', text: '-' }),
+    luggageItems,
   )
 
   // ---------- Questions ----------
-  const questionButtons = STANDARD_QUESTIONS.map((q) => {
-    const b = el('button', { className: 'btn small q-btn', text: q.label, title: q.text })
+  const questionButtons = QUESTIONS.map((q) => {
+    const b = el('button', {
+      className: 'btn small q-btn',
+      text: q.label,
+      title: STANDARD_QUESTIONS[q.kind],
+    })
     b.type = 'button'
     b.dataset.question = q.kind
-    b.addEventListener('click', () => void ask({ kind: q.kind, text: q.text, discrepancy: null }))
+    b.addEventListener('click', () => void ask({ kind: q.kind }, STANDARD_QUESTIONS[q.kind]))
     return b
   })
   const discrepancyButton = el('button', {
@@ -162,9 +195,8 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   discrepancyButton.type = 'button'
   discrepancyButton.dataset.question = 'discrepancy'
   discrepancyButton.addEventListener('click', () => {
-    if (!discrepancy) return
-    const text = `Explain this: ${discrepancy.message}`
-    void ask({ kind: 'discrepancy', text, discrepancy: discrepancy.message })
+    const found = latestDiscovery()
+    if (found) void ask({ kind: 'discrepancy', code: found.code }, null)
   })
   const freeInput = el('input', {
     className: 'free-input',
@@ -174,13 +206,13 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   freeButton.type = 'button'
   const freeNote = el('div', {
     className: 'free-note',
-    text: port.freeQuestions ? '' : 'Free questions need the Claude adversary.',
+    text: options.freeQuestions ? '' : 'Free questions need the Claude adversary.',
   })
   const submitFree = () => {
     const text = freeInput.value.trim().slice(0, 80)
     if (!text) return
     freeInput.value = ''
-    void ask({ kind: 'free', text, discrepancy: discrepancy?.message ?? null })
+    void ask({ kind: 'free', text }, text)
   }
   freeButton.addEventListener('click', submitFree)
   freeInput.addEventListener('keydown', (e) => {
@@ -212,6 +244,9 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   calendar.classList.add('desk-fixed')
   placeAt(calendar, 640, 592)
   deskArea.append(calendar)
+  const canDrag = () => !inspecting && !armed
+  const topDeskZ = () =>
+    Math.max(0, ...[...deskArea.children].map((c) => Number((c as HTMLElement).style.zIndex || 0)))
   // Rulebook and bulletin can be put away to make room; on day 1 both start open
   const panels = [
     { node: rulebook.root, left: 316, top: 150, label: 'Rulebook' },
@@ -223,7 +258,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     close.type = 'button'
     panel.node.append(close)
     placeAt(panel.node, panel.left, panel.top)
-    makeDraggable(panel.node, { bounds: deskArea, canDrag: () => !inspecting && !armed })
+    makeDraggable(panel.node, { bounds: deskArea, canDrag })
     deskArea.append(panel.node)
     const setOpen = (open: boolean) => {
       panel.node.classList.toggle('hidden', !open)
@@ -239,8 +274,6 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     setOpen(ctx.dayIndex === 1)
     return button
   })
-  const topDeskZ = () =>
-    Math.max(0, ...[...deskArea.children].map((c) => Number((c as HTMLElement).style.zIndex || 0)))
 
   const stampApprove = el('button', { className: 'stamp stamp-approve', text: 'APPROVE' })
   const stampDeny = el('button', { className: 'stamp stamp-deny', text: 'DENY' })
@@ -257,11 +290,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const deepButtons = new Map<DeepToolId, HTMLButtonElement>()
   for (const tool of DEEP_TOOL_IDS) {
     if (!ctx.tools.includes(tool)) continue
-    const b = el('button', {
-      className: 'btn small tool-btn',
-      text: SHORT_TOOL[tool],
-      title: `${DEEP_CHECK_MINUTES[tool]} minutes plus a typed form`,
-    })
+    const b = el('button', { className: 'btn small tool-btn', text: SHORT_TOOL[tool] })
     b.type = 'button'
     b.dataset.tool = tool
     b.addEventListener('click', () => startDeepCheck(tool))
@@ -295,6 +324,8 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     modalLayer,
   )
 
+  const resumeButton = el('button', { className: 'btn primary', text: 'Resume' })
+  resumeButton.type = 'button'
   const pauseOverlay = el(
     'div',
     { className: 'overlay hidden' },
@@ -302,11 +333,9 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       'div',
       { className: 'overlay-box' },
       el('div', { className: 'overlay-title', text: 'PAUSED' }),
+      resumeButton,
     ),
   )
-  const resumeButton = el('button', { className: 'btn primary', text: 'Resume' })
-  resumeButton.type = 'button'
-  pauseOverlay.firstElementChild?.append(resumeButton)
   const endOverlay = el('div', { className: 'overlay hidden' })
 
   const root = el(
@@ -321,62 +350,80 @@ export function boothScreen(options: BoothOptions): BoothScreen {
 
   // ---------- Helpers ----------
 
+  const latestDiscovery = () => {
+    const s = session()
+    return s ? (s.discoveries[s.discoveries.length - 1] ?? null) : null
+  }
+
   const refreshTop = () => {
-    const minute = port.minute()
-    clock.set(Math.min(minute, port.shiftEnd()), minute >= port.shiftEnd() - 60)
-    queue.set(port.waiting())
-    moneyLabel.textContent = formatMoney(port.money())
+    clock.set(loop.clock, loop.minutesLeft <= 60)
+    queue.set(loop.queue.length)
+    moneyLabel.textContent = formatMoney(loop.state.economy.money)
   }
 
   const refreshControls = () => {
-    const a = port.current()
-    const active = a !== null && !decided
+    const s = session()
+    const active = s !== null
     const blocked = busy || modalOpen || finished || paused
     nextButton.disabled = blocked || active
-    nextButton.textContent = port.waiting() === 0 && !active ? 'Close booth' : 'Call next'
+    nextButton.textContent = loop.queue.length === 0 && !active ? 'Close booth' : 'Call next'
     for (const b of questionButtons) b.disabled = blocked || !active
-    discrepancyButton.disabled = blocked || !active || !discrepancy
-    discrepancyButton.textContent = discrepancy
-      ? `Ask about: ${discrepancy.message}`
+    const found = latestDiscovery()
+    discrepancyButton.disabled = blocked || !active || !found
+    discrepancyButton.textContent = found
+      ? `Ask about: ${found.violation.message}`
       : 'Ask about a discrepancy (inspect first)'
-    freeInput.disabled = blocked || !active || !port.freeQuestions
+    freeInput.disabled = blocked || !active || !options.freeQuestions
     freeButton.disabled = freeInput.disabled
     inspectButton.disabled = blocked
     inspectButton.classList.toggle('active', inspecting)
     for (const [tool, b] of deepButtons) {
-      const notice = port.deviceNotice(tool)
-      b.disabled = blocked || !active || !deepToolUsable(tool, a)
-      b.textContent = notice ? `${SHORT_TOOL[tool]} (!)` : SHORT_TOOL[tool]
-      b.title = notice ?? `${DEEP_CHECK_MINUTES[tool]} minutes plus a typed form`
+      const status = loop.toolStatus(tool)
+      const minutes = loop.deepCheckMinutes(tool)
+      b.disabled = blocked || !active || status === 'down' || !deepToolUsable(tool, s)
+      b.textContent =
+        status === 'down'
+          ? `${SHORT_TOOL[tool]} (out)`
+          : status === 'slow'
+            ? `${SHORT_TOOL[tool]} (slow)`
+            : SHORT_TOOL[tool]
+      b.title =
+        status === 'down'
+          ? 'Out of order today'
+          : `${minutes ?? '?'} minutes plus a typed form${status === 'slow' ? ', slowed down today' : ''}`
     }
     incidentButton.disabled = blocked || !active
     stampApprove.disabled = blocked || !active
     stampDeny.disabled = blocked || !active
     stampApprove.classList.toggle('armed', armed === 'approve')
     stampDeny.classList.toggle('armed', armed === 'deny')
-    stampHint.textContent = armed
-      ? 'Click a document to stamp it, or the stamp again.'
-      : active
-        ? 'Pick up a stamp.'
-        : ''
+    if (armed) stampHint.textContent = 'Click a document to stamp it, or the stamp again.'
+    else stampHint.textContent = active ? 'Pick up a stamp.' : ''
     deskArea.classList.toggle('inspecting', inspecting)
     windowCol.classList.toggle('inspecting', inspecting)
     deskArea.classList.toggle('armed', armed !== null)
+    refreshEnvelope()
   }
 
-  const deepToolUsable = (tool: DeepToolId, a: Applicant | null): boolean => {
-    if (!a) return false
-    if (tool === 'registry') return a.documents.some(isNumbered)
-    if (tool === 'verifyLetter') return a.documents.some((d) => d.type === 'letter')
+  const deepToolUsable = (tool: DeepToolId, s: BoothSession | null): boolean => {
+    if (!s) return false
+    if (tool === 'registry') return s.applicant.documents.some(isNumbered)
+    if (tool === 'verifyLetter') return s.applicant.documents.some((d) => d.type === 'letter')
     return true
   }
 
-  const speak = async (lines: SpokenLines) => {
-    for (const note of lines.notes) transcript.add('system', note)
-    for (const line of lines.say) {
-      if (!line) continue
-      transcript.add('applicant', line)
-      await speech.say(line)
+  const refreshAll = () => {
+    refreshTop()
+    refreshControls()
+  }
+
+  const note = (text: string) => transcript.add('system', text)
+
+  // Show the person's lines one after another in the bubble and the transcript
+  const speak = async (lines: readonly SpokenLine[]) => {
+    for (const line of lines) {
+      transcript.add('applicant', line.text)
+      await speech.say(line.text)
     }
   }
 
@@ -417,89 +464,104 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const clearApplicant = () => {
     for (const item of applicantItems) item.remove()
     applicantItems.length = 0
+    envelope = null
     personSlot.replaceChildren()
     heightMarker.classList.add('hidden')
-    scaleView.querySelector('.scale-value')!.textContent = '-- kg'
-    luggage.querySelector('.luggage-items')!.textContent = '-'
+    scaleValue.textContent = '-- kg'
+    luggageItems.textContent = '-'
     shutter.classList.remove('hidden')
     speech.clear()
-    discrepancy = null
     armed = null
     clearSelection()
   }
 
-  const showApplicant = (a: Applicant) => {
+  const showApplicant = (s: BoothSession) => {
+    const a = s.applicant
     shutter.classList.add('hidden')
-    const coat = hashText(a.id) % 6
-    const portrait = portraitCanvas(a.appearance.face, 7, { coat })
-    const face = el('div', { className: 'person-face', ref: 'person:face' }, portrait)
-    personSlot.replaceChildren(face)
+    const portrait = portraitCanvas(a.appearance.face, 7, { coat: hashText(a.id) % 6 })
+    personSlot.replaceChildren(
+      el('div', { className: 'person-face', ref: 'person:face' }, portrait),
+    )
+    const height = Math.min(RULER_MAX, Math.max(RULER_MIN, a.appearance.height))
     heightMarker.classList.remove('hidden')
-    heightMarker.style.bottom = `${(Math.min(RULER_MAX, Math.max(RULER_MIN, a.appearance.height)) - RULER_MIN) * RULER_PX}px`
+    heightMarker.style.bottom = `${(height - RULER_MIN) * RULER_PX}px`
     heightMarker.textContent = `${a.appearance.height} cm`
-    scaleView.querySelector('.scale-value')!.textContent = `${a.appearance.weight} kg`
-    luggage.querySelector('.luggage-items')!.textContent =
-      a.appearance.luggage.map((l) => l.label).join(', ') || 'nothing'
-
+    scaleValue.textContent = `${a.appearance.weight} kg`
+    luggageItems.textContent = a.appearance.luggage.map((l) => l.label).join(', ') || 'nothing'
     a.documents.forEach((doc, i) => {
       const node = renderDocument(doc)
       node.dataset.applicant = a.id
       node.classList.add('arriving')
       const [left, top] = DOC_SPOTS[i] ?? [120 + i * 20, 100 + i * 24]
       placeAt(node, left, top)
-      makeDraggable(node, { bounds: deskArea, canDrag: () => !inspecting && !armed })
+      makeDraggable(node, { bounds: deskArea, canDrag })
       deskArea.append(node)
       bringToFront(node)
       applicantItems.push(node)
     })
-    const offer = port.bribeOffer()
-    if (offer !== null) showEnvelope(offer)
   }
 
+  // The envelope stays on the desk until the stamp. Keeping or returning can change until then.
   const showEnvelope = (amount: number) => {
-    const keep = el('button', { className: 'btn small primary', text: 'Keep' })
-    const back = el('button', { className: 'btn small ghost', text: 'Hand back' })
+    if (envelope) return
+    const keep = el('button', { className: 'btn small primary env-keep', text: 'Keep' })
+    const back = el('button', { className: 'btn small ghost env-back', text: 'Hand back' })
     keep.type = 'button'
     back.type = 'button'
-    const envelope = el(
+    const status = el('div', { className: 'env-status' })
+    envelope = el(
       'div',
       { className: 'doc envelope' },
       el('div', { className: 'env-flap' }),
       el('div', { className: 'env-text', text: `ENVELOPE · ${formatMoney(amount)}` }),
+      status,
       el('div', { className: 'env-buttons' }, keep, back),
     )
     envelope.dataset.applicant = 'envelope'
     placeAt(envelope, 200, 470)
-    makeDraggable(envelope, { bounds: deskArea, canDrag: () => !inspecting && !armed })
+    makeDraggable(envelope, { bounds: deskArea, canDrag })
     deskArea.append(envelope)
     bringToFront(envelope)
     applicantItems.push(envelope)
     const respond = (accept: boolean) => {
-      envelope.remove()
-      transcript.add(
-        'inspector',
-        accept ? '(You keep the envelope.)' : '(You hand the envelope back.)',
-      )
-      void speak(port.respondToBribe(accept)).then(refreshAll)
+      const result = accept ? loop.acceptBribe() : loop.refuseBribe()
+      if (!result.ok) note(result.message)
+      else
+        transcript.add(
+          'inspector',
+          accept ? '(You pocket the envelope.)' : '(You push the envelope back.)',
+        )
+      refreshAll()
     }
     keep.addEventListener('click', () => respond(true))
     back.addEventListener('click', () => respond(false))
+    refreshEnvelope()
   }
 
-  const addSlip = (title: string, lines: string[]) => {
-    const slip = renderReportSlip(title, lines, `${formatMinute(port.minute())} · OFFICER COPY`)
+  const refreshEnvelope = () => {
+    if (!envelope) return
+    const bribe = session()?.bribe
+    const status = envelope.querySelector<HTMLElement>('.env-status')
+    const keep = envelope.querySelector<HTMLButtonElement>('.env-keep')
+    const back = envelope.querySelector<HTMLButtonElement>('.env-back')
+    if (!bribe || !status || !keep || !back) return
+    status.textContent = bribe.reported
+      ? 'Reported. It goes to the supervisor.'
+      : bribe.accepted
+        ? 'In your pocket. Only an approval lets you keep it.'
+        : 'Untouched on the desk.'
+    keep.disabled = bribe.reported || bribe.accepted || busy || modalOpen
+    back.disabled = bribe.reported || !bribe.accepted || busy || modalOpen
+  }
+
+  const addSlip = (title: string, lines: readonly string[]) => {
+    const slip = renderReportSlip(title, lines, `${formatMinute(loop.clock)} · OFFICER COPY`)
     placeAt(slip, 300 + (slipCount % 4) * 24, 120 + (slipCount % 4) * 30)
     slipCount += 1
-    makeDraggable(slip, { bounds: deskArea, canDrag: () => !inspecting && !armed })
+    makeDraggable(slip, { bounds: deskArea, canDrag })
     deskArea.append(slip)
     bringToFront(slip)
     applicantItems.push(slip)
-  }
-
-  const refreshAll = () => {
-    refreshTop()
-    refreshControls()
-    if (port.isOver() && !finished) finishShift()
   }
 
   // ---------- Actions ----------
@@ -508,49 +570,56 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     if (busy || finished) return
     clearApplicant()
     transcript.clear()
-    decided = false
-    const result = port.callNext()
-    const a = port.current()
-    if (!result || !a) {
+    const result = loop.callNext()
+    if (!result.ok) {
+      note(result.message)
       refreshAll()
       return
     }
+    showApplicant(result.session)
+    if (result.session.bribe && result.session.leverPresented) {
+      showEnvelope(result.session.bribe.amount)
+    }
     busy = true
     refreshAll()
-    showApplicant(a)
+    await speak(result.lines)
     busy = false
-    refreshAll()
-    await speak(result)
     refreshAll()
   }
 
-  const ask = async (question: ShiftQuestion) => {
-    if (busy || !port.current()) return
+  const ask = async (request: QuestionRequest, shownQuestion: string | null) => {
+    if (busy || !session()) return
     busy = true
     refreshControls()
-    transcript.add('inspector', question.text)
-    try {
-      const result = await port.ask(question, (partial) => speech.stream(partial))
-      refreshTop()
-      await speak(result)
-    } catch (error) {
-      transcript.add(
-        'system',
-        `No answer: ${error instanceof Error ? error.message : 'unknown error'}`,
-      )
-    } finally {
-      busy = false
-      refreshAll()
+    let partials = 0
+    const result = await loop.ask(request, (partial) => {
+      partials += 1
+      if (partials > 1) speech.stream(partial)
+    })
+    if (!result.ok) {
+      note(result.message)
+    } else {
+      transcript.add('inspector', shownQuestion ?? result.question.text)
+      // A streamed answer is already in the bubble, a template answer is typed out
+      for (const line of result.lines) {
+        if (line.trigger === 'answer' && partials > 1) {
+          transcript.add('applicant', line.text)
+          speech.stream(line.text)
+        } else {
+          await speak([line])
+        }
+      }
     }
+    busy = false
+    refreshAll()
   }
 
   const onInspectClick = (key: string) => {
-    if (!port.current()) {
+    if (!session()) {
       showBanner('Nobody at the window.', 'miss')
       return
     }
-    const hadResult = root.querySelector('[data-ref].hit, [data-ref].miss') !== null
-    if (hadResult) clearSelection()
+    if (root.querySelector('[data-ref].hit, [data-ref].miss')) clearSelection()
     if (selected.includes(key)) {
       selected = selected.filter((k) => k !== key)
       for (const node of root.querySelectorAll<HTMLElement>('[data-ref].selected')) {
@@ -566,14 +635,17 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       return
     }
     const keys = [...selected]
-    const outcome = port.inspect(keys)
-    if (outcome.code && outcome.message) {
-      for (const k of keys) markRef(k, 'hit')
-      discrepancy = { code: outcome.code, message: outcome.message }
-      showBanner(`DISCREPANCY: ${outcome.message}`, 'hit')
-      transcript.add('system', `Discrepancy noted: ${outcome.message}`)
+    const result = loop.inspect(keys)
+    if (!result.ok) {
+      showBanner(result.message, 'miss')
       selected = []
-      void speak(outcome)
+    } else if (result.found) {
+      for (const k of keys) markRef(k, 'hit')
+      const text = result.evidence?.description ?? result.found.message
+      showBanner(`DISCREPANCY: ${text}`, 'hit')
+      if (result.isNew) note(`Discrepancy noted: ${result.found.message}`)
+      selected = []
+      void speak(result.lines)
     } else if (keys.length >= 2) {
       for (const k of keys) markRef(k, 'miss')
       showBanner('No discrepancy between these two.', 'miss')
@@ -600,11 +672,12 @@ export function boothScreen(options: BoothOptions): BoothScreen {
 
   const choiceDialog = (
     title: string,
-    sections: { label: string; choices: { label: string; value: string }[] }[],
+    warning: string | null,
+    sections: { label: string; choices: Choice[] }[],
     onPick: (values: string[]) => void,
   ) => {
     const picked: (string | null)[] = sections.map((s) =>
-      s.choices.length === 1 ? s.choices[0]!.value : null,
+      s.choices.length === 1 ? (s.choices[0]?.value ?? null) : null,
     )
     const go = el('button', { className: 'btn primary', text: 'Continue' })
     go.type = 'button'
@@ -646,27 +719,24 @@ export function boothScreen(options: BoothOptions): BoothScreen {
         'div',
         { className: 'dialog' },
         el('div', { className: 'dialog-title', text: title }),
+        warning ? el('div', { className: 'dialog-warning', text: warning }) : null,
         ...body,
         el('div', { className: 'dialog-buttons' }, cancel, go),
       ),
     )
   }
 
-  const typingThen = (
-    title: string,
-    line: string,
-    note: string,
-    done: (t: { typedMs: number; typos: number }) => void,
-  ) => {
+  const typeForm = (form: OpenForm, note: string, done: (typing: TypingResult) => void) => {
     const test = createTypingTest({
-      title,
-      line,
+      title: `${FORM_TITLES[form.kind]} · FORM`,
+      line: form.line,
       note,
-      onDone: (result) => {
+      onDone: (typing) => {
         closeModal()
-        done(result)
+        done(typing)
       },
       onCancel: () => {
+        loop.cancelForm()
         closeModal()
         transcript.add('system', 'Form discarded.')
       },
@@ -676,13 +746,13 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   }
 
   const startDeepCheck = (tool: DeepToolId) => {
-    const a = port.current()
-    if (!a || busy) return
-    const sections: { label: string; choices: { label: string; value: string }[] }[] = []
+    const s = session()
+    if (!s || busy) return
+    const sections: { label: string; choices: Choice[] }[] = []
     if (tool === 'registry') {
       sections.push({
         label: 'Document',
-        choices: a.documents.filter(isNumbered).map((d) => ({
+        choices: s.applicant.documents.filter(isNumbered).map((d) => ({
           label: `${DOC_TITLES[d.type]} ${d.number}`,
           value: d.id,
         })),
@@ -690,45 +760,66 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     } else if (tool === 'verifyLetter') {
       sections.push({
         label: 'Letter',
-        choices: a.documents
-          .filter((d) => d.type === 'letter')
-          .map((d) => ({ label: d.type === 'letter' ? d.title : d.id, value: d.id })),
+        choices: s.applicant.documents.flatMap((d) =>
+          d.type === 'letter' ? [{ label: d.title, value: d.id }] : [],
+        ),
       })
     }
-    const reasons = [
-      ...(discrepancy ? [discrepancy.code.replace(/_/g, ' ')] : []),
-      ...DEEP_CHECK_REASONS,
-    ]
-    sections.push({ label: 'Reason', choices: reasons.map((r) => ({ label: r, value: r })) })
-    const notice = port.deviceNotice(tool)
-    choiceDialog(
-      `${TOOL_NAMES[tool]} request${notice ? ` · ${notice}` : ''}`,
-      sections,
-      (values) => {
-        const docId = tool === 'registry' || tool === 'verifyLetter' ? (values[0] ?? null) : null
-        const reason = values[values.length - 1] ?? 'ROUTINE CHECK'
-        const line = port.documentationLine(tool, docId, reason)
-        typingThen(
-          `${TOOL_NAMES[tool].toUpperCase()} · FORM`,
-          line,
-          `The check itself takes ${DEEP_CHECK_MINUTES[tool]} minutes once the form is filed.`,
-          (typing) => {
-            transcript.add('inspector', `(${TOOL_NAMES[tool]} requested.)`)
-            const outcome = port.deepCheck(tool, docId, typing)
-            if (outcome.report) addSlip(outcome.report.title, outcome.report.lines)
-            else transcript.add('system', 'The device produced no report.')
+    const seen = new Set<ViolationCode>()
+    const reasons: Choice[] = []
+    for (const d of s.discoveries) {
+      if (seen.has(d.code)) continue
+      seen.add(d.code)
+      reasons.push({ label: reasonFromCode(d.code), value: `code:${d.code}` })
+    }
+    for (const r of REASON_CHOICES[tool]) reasons.push({ label: r, value: `reason:${r}` })
+    sections.push({ label: 'Reason', choices: reasons })
+    const minutes = loop.deepCheckMinutes(tool)
+    const late =
+      minutes !== null && minutes > loop.minutesLeft
+        ? 'This check would run past 18:00. The person would leave unprocessed.'
+        : loop.toolStatus(tool) === 'slow'
+          ? 'The device was tampered with and runs slow today.'
+          : null
+    choiceDialog(`${TOOL_NAMES[tool]} request`, late, sections, (values) => {
+      const docValue = tool === 'registry' || tool === 'verifyLetter' ? values[0] : undefined
+      const reasonValue = values[values.length - 1] ?? ''
+      const opened = loop.openForm(tool, {
+        ...(docValue ? { docId: docValue } : {}),
+        ...(reasonValue.startsWith('code:')
+          ? { code: reasonValue.slice(5) as ViolationCode }
+          : { reason: reasonValue.slice(7) }),
+      })
+      if (!opened.ok) {
+        note(opened.message)
+        refreshAll()
+        return
+      }
+      typeForm(
+        opened.form,
+        `The check itself takes ${minutes ?? '?'} minutes once the form is filed.`,
+        (typing) => {
+          const result = loop.deepCheck(opened.form, typing)
+          if (!result.ok) {
+            note(result.message)
             refreshAll()
-            void speak(outcome).then(refreshAll)
-          },
-        )
-      },
-    )
+            return
+          }
+          transcript.add('inspector', `(${TOOL_NAMES[tool]} requested.)`)
+          addSlip(FORM_TITLES[tool], result.lines)
+          for (const v of result.revealed) note(`Finding: ${v.message}`)
+          refreshAll()
+          void speak(result.spoken).then(refreshAll)
+        },
+      )
+    })
   }
 
   const startIncident = () => {
-    if (!port.current() || busy) return
+    if (!session() || busy) return
     choiceDialog(
       'Incident report',
+      null,
       [
         {
           label: 'What happened',
@@ -736,62 +827,74 @@ export function boothScreen(options: BoothOptions): BoothScreen {
         },
       ],
       (values) => {
-        const kind = (values[0] ?? 'threat') as IncidentKind
-        typingThen(
-          'INCIDENT REPORT · FORM',
-          port.incidentLine(kind),
-          'Filed reports go to the supervisor.',
-          (typing) => {
-            transcript.add('inspector', '(Incident report filed.)')
-            const result = port.reportIncident(kind, typing)
-            refreshAll()
-            void speak(result).then(refreshAll)
-          },
-        )
+        const incident = (values[0] ?? 'threat') as IncidentKind
+        const opened = loop.openForm('incident', { incident })
+        if (!opened.ok) {
+          note(opened.message)
+          refreshAll()
+          return
+        }
+        typeForm(opened.form, 'Filed reports go to the supervisor.', (typing) => {
+          const result = loop.reportIncident(opened.form, typing)
+          if (!result.ok) note(result.message)
+          else transcript.add('inspector', '(Incident report filed.)')
+          refreshAll()
+        })
       },
     )
   }
 
   const arm = (decision: Decision) => {
-    if (!port.current() || busy || decided) return
+    if (!session() || busy) return
     if (armed === decision) {
       void stamp(null)
       return
     }
-    const first = armed === null
     armed = decision
     if (inspecting) setInspecting(false)
     refreshControls()
-    if (first) void speak(port.beforeDecision()).then(refreshAll)
   }
 
   const stamp = async (target: HTMLElement | null) => {
     const decision = armed
-    const a = port.current()
-    if (!decision || !a || decided) return
-    decided = true
+    const s = session()
+    if (!decision || !s) return
+    const result = loop.decide(decision)
+    if (!result.ok) {
+      note(result.message)
+      refreshAll()
+      return
+    }
+    if (result.status === 'interrupted') {
+      // The person has something to say first; the stamp stays in hand
+      busy = true
+      refreshAll()
+      stampHint.textContent = 'They have something to say. Stamp again to decide.'
+      await speak(result.lines)
+      busy = false
+      refreshAll()
+      stampHint.textContent = 'Stamp again to decide.'
+      return
+    }
     armed = null
     const paper =
       target ??
       applicantItems.find((n) => n.classList.contains('doc-passport')) ??
-      applicantItems.find((n) => n.dataset.applicant === a.id) ??
+      applicantItems.find((n) => n.dataset.applicant === s.applicant.id) ??
       null
-    if (paper) {
-      paper.append(
-        el('div', {
-          className: `stamp-mark ${decision}`,
-          text: decision === 'approve' ? 'ENTRY APPROVED' : 'ENTRY DENIED',
-        }),
-      )
-    }
+    paper?.append(
+      el('div', {
+        className: `stamp-mark ${decision}`,
+        text: decision === 'approve' ? 'ENTRY APPROVED' : 'ENTRY DENIED',
+      }),
+    )
     transcript.add(
       'inspector',
       decision === 'approve' ? '(Stamped: APPROVED)' : '(Stamped: DENIED)',
     )
-    const result = port.decide(decision)
     busy = true
     refreshAll()
-    await speak(result)
+    await speak(result.lines)
     await new Promise((resolve) => setTimeout(resolve, 600))
     for (const item of applicantItems) item.classList.add('leaving')
     await new Promise((resolve) => setTimeout(resolve, 350))
@@ -800,7 +903,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     refreshAll()
   }
 
-  const finishShift = () => {
+  const finishShift = (byClock: boolean, notProcessed: number | null = null) => {
     if (finished) return
     finished = true
     armed = null
@@ -811,18 +914,16 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     button.dataset.action = 'end-shift'
     button.addEventListener('click', () => {
       destroy()
-      port.endShift()
       options.onShiftOver()
     })
-    const atWindow = port.current() !== null && !decided ? 1 : 0
-    const left = port.waiting() + atWindow
+    const left = notProcessed ?? loop.queue.length + (session() ? 1 : 0)
     endOverlay.replaceChildren(
       el(
         'div',
         { className: 'overlay-box' },
         el('div', {
           className: 'overlay-title',
-          text: port.minute() >= port.shiftEnd() ? '18:00 · SHUTTER DOWN' : 'BOOTH CLOSED',
+          text: byClock ? '18:00 · SHUTTER DOWN' : 'BOOTH CLOSED',
         }),
         el('div', {
           className: 'overlay-text',
@@ -833,12 +934,6 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     )
     endOverlay.classList.remove('hidden')
     refreshControls()
-  }
-
-  const closeEarly = () => {
-    if (port.current() && !decided) return
-    if (port.waiting() > 0) return
-    finishShift()
   }
 
   const togglePause = () => {
@@ -852,7 +947,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   // ---------- Events ----------
 
   nextButton.addEventListener('click', () => {
-    if (port.waiting() === 0 && !port.current()) closeEarly()
+    if (loop.queue.length === 0 && !session()) finishShift(false)
     else void callNext()
   })
   pauseButton.addEventListener('click', togglePause)
@@ -871,7 +966,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       if (!target) return
       if (armed) {
         const paper = target.closest<HTMLElement>('.doc[data-applicant]')
-        if (paper && paper.dataset.applicant !== 'envelope') {
+        if (paper && paper.dataset.applicant !== 'envelope' && !busy) {
           event.preventDefault()
           event.stopPropagation()
           void stamp(paper)
@@ -903,6 +998,15 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   }
   window.addEventListener('keydown', onKey)
 
+  const unsubscribe = loop.on((event: LoopEvent) => {
+    if (event.type === 'clock') refreshTop()
+    else if (event.type === 'bribe_offered') showEnvelope(event.amount)
+    else if (event.type === 'shift_over') {
+      refreshTop()
+      finishShift(true, event.notProcessed)
+    }
+  })
+
   // ---------- Clock ----------
 
   const frame = (now: number) => {
@@ -913,9 +1017,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       const whole = Math.floor(carry)
       if (whole > 0) {
         carry -= whole
-        port.advanceClock(whole)
-        refreshTop()
-        if (port.isOver()) finishShift()
+        loop.advanceClock(whole)
       }
     }
     raf = requestAnimationFrame(frame)
@@ -924,12 +1026,16 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const destroy = () => {
     cancelAnimationFrame(raf)
     window.removeEventListener('keydown', onKey)
+    unsubscribe()
   }
 
   clearApplicant()
   refreshAll()
-  transcript.add('system', `Shift ${ctx.dayIndex} begins. ${port.waiting()} people in line.`)
+  note(
+    `Shift ${ctx.dayIndex} begins at ${formatMinute(loop.clock)}. ${loop.queue.length} people in line.`,
+  )
   raf = requestAnimationFrame(frame)
+  if (loop.shiftOver) finishShift(true)
 
   return { root, destroy }
 }

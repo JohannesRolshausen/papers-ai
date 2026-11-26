@@ -1,47 +1,35 @@
 // Game application: screen flow from the title to the final report.
+// The shift controller (DayLoop) runs the game, the screens only show it.
 // The game is saved after every phase.
 
 import './styles.css'
+import { ADVERSARY_MODES, createAdversaries, freeQuestionsEnabled } from '../ai/factory'
 import { DIFFICULTIES } from '../config'
+import type { DayStart } from '../core/dayLoop'
+import { DayLoop } from '../core/dayLoop'
+import type { EveningReport } from '../core/economy'
+import { eveningReport, formatMoney } from '../core/economy'
 import { clearSave, contextForDay, createNewGame, loadGame, saveGame } from '../core/state'
 import type { GameState } from '../core/types'
-import { formatMoney } from './dom'
+import { createTypingTest } from './components/typingTest'
+import { el } from './dom'
+import type { BulletinScreen } from './screens/bulletin'
 import { bulletinScreen } from './screens/bulletin'
 import { boothScreen } from './screens/booth'
 import { endScreen } from './screens/end'
 import { eveningScreen } from './screens/evening'
-import type { AdversaryModeInfo, SetupChoice } from './screens/setup'
+import type { SetupChoice } from './screens/setup'
 import { setupScreen } from './screens/setup'
 import { titleScreen } from './screens/title'
-import type { Session } from './session'
-import type { ShiftPort } from './shiftPort'
-import { createSession } from './session'
 import { createStage } from './stage'
-
-const MODES: AdversaryModeInfo[] = [
-  {
-    mode: 'offline',
-    label: 'Offline adversary',
-    description: 'A rule-based planner that runs in your browser. No account, no key.',
-    available: true,
-    unavailableReason: null,
-  },
-  {
-    mode: 'claude',
-    label: 'Claude',
-    description: 'A language model plans every day and answers your questions in character.',
-    available: false,
-    unavailableReason: 'Coming in a later update. Needs your own API key.',
-  },
-]
 
 // Under ?test the smoke test can read the ground truth of the person at the window.
 // Never active in normal play.
-function exposeTestHook(port: ShiftPort): void {
+function exposeTestHook(loop: DayLoop): void {
   if (!new URLSearchParams(window.location.search).has('test')) return
   ;(window as unknown as { __oversightTest: unknown }).__oversightTest = {
-    current: () => port.current(),
-    minute: () => port.minute(),
+    current: () => loop.current?.applicant ?? null,
+    minute: () => loop.clock,
   }
 }
 
@@ -60,8 +48,15 @@ function storage(): Storage | null {
   }
 }
 
+// Notices for the morning bulletin: consequences that arrived and planner fallbacks
+function morningNotices(day: DayStart): string[] {
+  const notices = day.events.map((e) => e.text)
+  if (day.notice) notices.push(day.notice)
+  return notices
+}
+
 class App {
-  private session: Session | null = null
+  private loop: DayLoop | null = null
   private cleanup: (() => void) | null = null
 
   constructor(private readonly stage: HTMLElement) {}
@@ -74,7 +69,14 @@ class App {
 
   private save(): void {
     const store = storage()
-    if (store && this.session) saveGame(this.session.state, store)
+    if (store && this.loop) saveGame(this.loop.state, store)
+  }
+
+  private attach(state: GameState): DayLoop {
+    const { main, fallback } = createAdversaries(state.settings, state.seed)
+    this.loop = new DayLoop(state, main, { fallback })
+    exposeTestHook(this.loop)
+    return this.loop
   }
 
   title(): void {
@@ -97,7 +99,7 @@ class App {
   private setup(): void {
     this.show(
       setupScreen({
-        modes: MODES,
+        modes: ADVERSARY_MODES,
         onBack: () => this.title(),
         onStart: (choice) => this.newGame(choice),
       }),
@@ -110,78 +112,129 @@ class App {
       settings: { aiMode: choice.aiMode, shiftRealSeconds: choice.shiftRealSeconds },
       seed: testSeed(),
     })
-    this.session = createSession(state)
+    this.attach(state)
     this.save()
-    this.bulletin()
+    this.morning()
   }
 
   private resume(state: GameState): void {
-    this.session = createSession(state)
-    // A shift is never saved half done: resume at that day's bulletin
-    if (state.phase === 'shift') state.phase = 'bulletin'
-    if (state.phase === 'evening') this.evening()
-    else this.bulletin()
+    const loop = this.attach(state)
+    // The controller turns a save from the middle of a shift back into its morning
+    if (loop.phase === 'evening') {
+      const last = state.days[state.days.length - 1]
+      if (last) {
+        this.evening(eveningReport(state, last))
+        return
+      }
+    }
+    this.morning()
   }
 
-  private bulletin(): void {
-    const session = this.session
-    if (!session) return this.title()
-    const state = session.state
-    state.phase = 'bulletin'
-    this.save()
+  // Shows the bulletin of the coming day at once and prepares the day behind it
+  private morning(): void {
+    const loop = this.loop
+    if (!loop) return this.title()
+    const day = loop.nextDayIndex() ?? loop.state.dayIndex
+    const ctx =
+      loop.context && loop.context.dayIndex === day ? loop.context : contextForDay(loop.state, day)
+    let start: DayStart | null = null
     const screen = bulletinScreen({
-      ctx: contextForDay(state),
-      money: state.economy.money,
-      notices: session.notices(),
-      busy: false,
-      onStart: () => {
-        screen.setBusy(true)
-        session
-          .startShift()
-          .then((port) => {
-            exposeTestHook(port)
-            const booth = boothScreen({
-              port,
-              shiftRealSeconds: state.settings.shiftRealSeconds,
-              onShiftOver: () => this.evening(),
-            })
-            this.show(booth.root, booth.destroy)
-          })
-          .catch((error: unknown) => {
-            screen.setBusy(false)
-            console.error(error)
-            window.alert(
-              `The shift could not start: ${error instanceof Error ? error.message : 'unknown error'}`,
-            )
-          })
+      ctx,
+      money: loop.state.economy.money,
+      onStart: () => this.startShift(screen, start),
+    })
+    this.show(screen.root)
+    loop
+      .startDay()
+      .then((prepared) => {
+        start = prepared
+        this.save()
+        screen.setMorning(morningNotices(prepared), loop.state.economy.money)
+        screen.setBusy(false)
+      })
+      .catch((error: unknown) => {
+        console.error(error)
+        screen.setBusy(true, 'The day could not be prepared. Reload to try again.')
+      })
+  }
+
+  private startShift(screen: BulletinScreen, day: DayStart | null): void {
+    if (!this.loop || !day) return
+    screen.setBusy(true, '')
+    // Supervisor reviews from complaints: the time is already lost, the form still gets typed
+    const reviews = [...day.reviews]
+    const next = () => {
+      const review = reviews.shift()
+      if (!review) {
+        this.booth()
+        return
+      }
+      const test = createTypingTest({
+        title: 'SUPERVISOR REVIEW · FORM',
+        line: review.line,
+        note: review.event.text,
+        cancellable: false,
+        onDone: () => {
+          layer.remove()
+          next()
+        },
+      })
+      const layer = el('div', { className: 'screen-modal' }, test.root)
+      screen.root.append(layer)
+      test.focus()
+    }
+    next()
+  }
+
+  private booth(): void {
+    const loop = this.loop
+    if (!loop) return this.title()
+    loop.beginShift()
+    const booth = boothScreen({
+      loop,
+      shiftRealSeconds: loop.state.settings.shiftRealSeconds,
+      freeQuestions: freeQuestionsEnabled(loop.state.settings),
+      onShiftOver: () => {
+        const report = loop.endShift()
+        this.save()
+        this.evening(report)
       },
     })
+    this.show(booth.root, booth.destroy)
+  }
+
+  private evening(report: EveningReport): void {
+    const loop = this.loop
+    if (!loop) return this.title()
+    const state = loop.state
+    const screen = eveningScreen(report, state.daysTotal, () => {
+      if (state.phase === 'final' || state.phase === 'gameover') this.end(state.phase)
+      else this.morning()
+    })
+    // Ask for tomorrow's plan now, so the morning loads quickly
+    loop.prefetchPlan()?.catch(() => undefined)
     this.show(screen.root)
   }
 
-  private evening(): void {
-    const session = this.session
-    if (!session) return this.title()
-    const data = session.evening()
-    this.save()
-    this.show(
-      eveningScreen(data, () => {
-        const phase = session.advance()
-        this.save()
-        if (phase === 'final' || phase === 'gameover') this.end(phase)
-        else this.bulletin()
-      }),
-    )
-  }
-
   private end(kind: 'final' | 'gameover'): void {
-    const session = this.session
-    const lines = session ? session.summary() : []
+    const state = this.loop?.state
+    const lines: string[] = []
+    if (state) {
+      const processed = state.days.reduce(
+        (sum, d) => sum + d.outcomes.filter((o) => o.decision !== 'none').length,
+        0,
+      )
+      lines.push(
+        `Days worked: ${state.days.length} of ${state.daysTotal}`,
+        `People processed: ${processed}`,
+        `Savings: ${formatMoney(state.economy.money)}`,
+      )
+    }
     this.show(
       endScreen({ kind, lines }, () => {
         const store = storage()
         if (store) clearSave(store)
-        this.session = null
+        this.loop = null
         this.title()
       }),
     )

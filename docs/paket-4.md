@@ -24,7 +24,31 @@ Du arbeitest am Spiel OVERSIGHT im Repo `johannesrolshausen/papers-ai`. Der Gesa
 
 ## Infos aus Paket 2
 
-(Wird vom Chat zu Paket 2 ausgefüllt: wo der Controller `planDay` und `respond` aufruft, Format der Beobachtungen, Fallback auf die Offline-KI.)
+Planung:
+
+- Der Controller `DayLoop` (`src/core/dayLoop.ts`) ruft `adversary.planDay(request)` in der privaten Methode `requestPlan(day)` auf. Auslöser sind `prefetchPlan()` (Oberfläche, während Evening Report und Bulletin) und `startDay()`. Beide teilen sich dieselbe Anfrage, die KI wird pro Tag einmal gefragt.
+- `PlanRequest.briefing` enthält schon das Budget nach der Tagesgutschrift. `previous` ist die Beobachtung des Vortags, `history` alle abgeschlossenen Tage.
+- Der Controller prüft jeden Plan mit `DayPlanSchema.safeParse`. Wirft `planDay` oder passt der Plan nicht zum Schema, nimmt er `options.fallback` (die Offline-KI) und setzt `source: 'fallback'` mit einem `notice`. Ohne `fallback` geht der Fehler an den Aufrufer von `startDay`. Eigene Hinweise (Ablehnung durch das Modell, Netzwerkfehler) setzt der Claude-Gegner selbst über `notice`. Der Controller wiederholt nichts. Backoff bei `RateLimitError` gehört in `claudeAdversary.ts`.
+- Die Planprüfung meldet Korrekturen in `StoredPlan.issues`, sie landen am nächsten Tag in `DayObservation.planIssues`.
+
+Verhör:
+
+- `loop.ask(question, onText)` ruft `adversary.respond({ dossier, transcript, question }, onText)`. Wirft das oder kommt eine leere Antwort, fragt der Controller `fallback.respond`, danach eine Vorlagenantwort (`answerQuestion` aus `src/ai/dialogueTemplates.ts`).
+- `transcript` enthält alle Sätze dieser Person bis jetzt, auch geskriptete Sätze und Hebel. `question` hat jetzt auch `code` (Verstoßcode bei Fragen zur Unstimmigkeit, sonst `null`).
+- `PersonaDossier` hat neu `claimed` (`ClaimedFacts`): was die Papiere behaupten (Nationalität, Ausstellungsstadt, Zweck, Dauer, Beruf, Arbeitgeber, Brief ja oder nein). Infiltratoren sollen sich daran halten, wer heimlich arbeiten kommt, nennt einen harmlosen Beruf.
+
+Beobachtungen (`src/core/observations.ts`, gebaut mit `observationHistory(state)` aus den gespeicherten Tagen):
+
+- `DayObservation`: `dayIndex`, `applicants`, `toolUsage` (Anzahl pro Werkzeug, auch `inspect` und `questions`), `averageMinutesPerApplicant`, `processed`, `notProcessed`, `infiltratorsThrough`, `infiltratorsStopped`, `legitDenied`, `events` (Texte der Folgen des Tages, also auch Funde im Inland), `planIssues`.
+- `ApplicantObservation` hat neu `legitQuirk`, `lever`, `leverReal` und `leverOutcome` (Satz aus Sicht der KI, zum Beispiel "The threat was ignored and not reported. Retaliation follows."). `flagged` enthält auch Codes, die eine Tiefenprüfung aufgedeckt hat. `result` ist aus Sicht der KI: `got_through`, `stopped`, `legit_admitted`, `legit_denied`, `not_processed`.
+
+Gedächtnis:
+
+- Der Controller speichert `adversary.exportMemory()` nach `startDay()` und nach `endShift()` in `state.adversaryMemory` und ruft beim Erzeugen `importMemory`, wenn dort etwas steht.
+- Die Offline-KI speichert `{ version: 1, kind: 'offline', journal }`. Der Claude-Gegner muss fremdes oder kaputtes Gedächtnis erkennen und dann leer starten, die Offline-KI macht es umgekehrt genauso.
+- Als Ersatz `createOfflineAdversary(state.seed)` verwenden, dann bleibt der Ablauf mit gleichem Seed gleich.
+
+Offen geblieben: Der Controller reicht `onText` nur durch. Die Offline-KI ruft es einmal mit der ganzen Antwort auf, echtes Streaming kommt mit dem Claude-Gegner.
 
 ## Infos aus Paket 3
 

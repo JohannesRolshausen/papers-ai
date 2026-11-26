@@ -2,6 +2,7 @@
 
 import type { DifficultyId } from '../../config'
 import { DIFFICULTIES, SHIFT } from '../../config'
+import type { AdversaryModeInfo } from '../../ai/factory'
 import type { AiMode } from '../../core/types'
 import { el } from '../dom'
 
@@ -9,14 +10,6 @@ export interface SetupChoice {
   difficulty: DifficultyId
   aiMode: AiMode
   shiftRealSeconds: number
-}
-
-export interface AdversaryModeInfo {
-  mode: AiMode
-  label: string
-  description: string
-  available: boolean
-  unavailableReason: string | null
 }
 
 export interface SetupOptions {
