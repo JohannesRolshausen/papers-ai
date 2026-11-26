@@ -45,6 +45,13 @@ function exposeTestHook(port: ShiftPort): void {
   }
 }
 
+// Under ?test&seed=N a new game uses that seed, so the smoke test is repeatable
+function testSeed(): number | undefined {
+  const params = new URLSearchParams(window.location.search)
+  const seed = Number(params.get('seed'))
+  return params.has('test') && Number.isInteger(seed) && seed > 0 ? seed : undefined
+}
+
 function storage(): Storage | null {
   try {
     return window.localStorage
@@ -101,6 +108,7 @@ class App {
     const state = createNewGame({
       difficulty: choice.difficulty,
       settings: { aiMode: choice.aiMode, shiftRealSeconds: choice.shiftRealSeconds },
+      seed: testSeed(),
     })
     this.session = createSession(state)
     this.save()
