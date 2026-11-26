@@ -8,13 +8,13 @@ import { ruleTitle } from '../../core/rules'
 import type { Bulletin, WantedEntry } from '../../core/types'
 import { countryName } from '../../core/world'
 import { el } from '../dom'
-import { portraitCanvas } from './portrait'
+import { PHOTO_BG, portraitCanvas } from './portrait'
 
 export function wantedCard(entry: WantedEntry, scale: number, ref = true): HTMLElement {
   return el(
     'div',
     { className: 'wanted-card', ref: ref ? `bulletin:wanted:${entry.id}` : undefined },
-    portraitCanvas(entry.face, scale, { sepia: true, background: '#efe9dc' }),
+    portraitCanvas(entry.face, scale, { sepia: true, background: PHOTO_BG }),
     el(
       'div',
       { className: 'wanted-info' },

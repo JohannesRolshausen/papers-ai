@@ -7,7 +7,7 @@ import { AUTHORITY_NAMES } from '../../core/seals'
 import type { CountryId } from '../../core/world'
 import { COUNTRIES, isCountryId } from '../../core/world'
 import { el } from '../dom'
-import { portraitCanvas } from './portrait'
+import { PHOTO_BG, portraitCanvas } from './portrait'
 import { sealCanvas } from './seal'
 
 const DATE_FIELDS = new Set(['dob', 'issued', 'expires', 'validUntil', 'vaccinatedOn'])
@@ -104,7 +104,7 @@ export function renderDocument(doc: GameDocument): HTMLElement {
     const photo = el(
       'div',
       { className: 'doc-photo', ref: docKey(doc.id, 'photo') },
-      portraitCanvas(doc.photo, 3, { sepia: true, background: '#efe9dc' }),
+      portraitCanvas(doc.photo, 3, { sepia: true, background: PHOTO_BG }),
     )
     root.append(
       header,

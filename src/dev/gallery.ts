@@ -7,7 +7,7 @@ import { FACE_RANGES, photoOf, randomFace } from '../core/faces'
 import { rngFor } from '../core/rng'
 import type { SealSpec } from '../core/seals'
 import { ALL_AUTHORITIES, AUTHORITY_NAMES, BASE_SEALS, SEAL_GLYPHS } from '../core/seals'
-import { portraitCanvas } from '../ui/components/portrait'
+import { PHOTO_BG, portraitCanvas } from '../ui/components/portrait'
 import { sealCanvas } from '../ui/components/seal'
 import { el } from '../ui/dom'
 
@@ -36,7 +36,7 @@ function partRow(part: FacePart, base: FaceSpec): HTMLElement {
         'figure',
         { className: 'gallery-cell' },
         portraitCanvas(face, 3, { coat: v }),
-        portraitCanvas(photoOf(face), 2, { sepia: true, background: '#efe9dc' }),
+        portraitCanvas(photoOf(face), 2, { sepia: true, background: PHOTO_BG }),
         el('figcaption', { text: `${part} ${v}` }),
       ),
     )
@@ -62,7 +62,7 @@ export function mountGallery(): void {
       'figure',
       { className: 'gallery-cell' },
       portraitCanvas(face, 3, { coat: i }),
-      portraitCanvas(photoOf(face), 2, { sepia: true, background: '#efe9dc' }),
+      portraitCanvas(photoOf(face), 2, { sepia: true, background: PHOTO_BG }),
     )
   })
 

@@ -6,6 +6,9 @@
 
 import type { FaceSpec } from '../../core/faces'
 
+// Photo backdrop: between light and dark skin tones, so every face stands out from it
+export const PHOTO_BG = '#80888c'
+
 export const PORTRAIT_W = 32
 export const PORTRAIT_H = 40
 
@@ -240,13 +243,14 @@ function drawNose(c: Canvas, type: number, shade: string): void {
       c.set(13, 19, shade)
       c.set(18, 19, shade)
       break
-    case 3: // hooked
+    case 3: // hooked, the bend below the glasses line
       c.set(15, 16, shade)
       c.set(16, 17, shade)
-      c.set(17, 18, shade)
+      c.set(16, 18, shade)
       c.set(17, 19, shade)
-      c.set(16, 20, shade)
-      c.set(15, 20, shade)
+      c.set(17, 20, shade)
+      c.set(16, 21, shade)
+      c.set(15, 21, shade)
       break
     default: // round button
       c.set(15, 19, shade)
@@ -309,11 +313,21 @@ function drawScar(c: Canvas, type: number, skinIndex: number): void {
   }
 }
 
-// The mouth always sits on bare skin, so beards never hide its shape
-function clearMouthArea(c: Canvas, mask: boolean[], skin: string): void {
-  for (let y = 23; y <= 25; y++) {
-    for (let x = 12; x <= 19; x++) if (inMask(mask, x, y)) c.set(x, y, skin)
-  }
+// Every pixel any core part can use. Hair and beards leave these pixels bare, so a core
+// feature always sits on skin and a difference between two faces is never hidden by style.
+let keepOutCache: boolean[] | null = null
+
+function coreKeepOut(): boolean[] {
+  if (keepOutCache) return keepOutCache
+  const c = new Canvas()
+  for (let t = 0; t < 4; t++) drawBrows(c, t)
+  for (let t = 0; t < 6; t++) drawEyes(c, t, '#000000')
+  for (let t = 0; t < 5; t++) drawNose(c, t, '#000000')
+  for (let y = 23; y <= 25; y++) c.row(y, 12, 19, '#000000')
+  drawScar(c, 1, 0)
+  drawScar(c, 2, 0)
+  keepOutCache = c.px.map((p) => p !== null)
+  return keepOutCache
 }
 
 function drawBeard(c: Canvas, type: number, mask: boolean[], color: string): void {
@@ -404,7 +418,7 @@ function drawHair(
         const t = (y - (top + 3)) / 8
         const hw = Math.round(11 * Math.sqrt(Math.max(0, 1 - t * t)))
         for (let x = 16 - hw; x <= 15 + hw; x++) {
-          if (y > top + 3 && inMask(mask, x, y) && x > 9 && x < 22) continue
+          if (y >= 10 && inMask(mask, x, y) && x > 8 && x < 23) continue
           c.set(x, y, (x * 3 + y * 5) % 7 === 0 ? light : color)
         }
       }
@@ -515,14 +529,16 @@ export function portraitPixels(face: FaceSpec, options: PortraitOptions = {}): P
   drawBody(c, face, skin, shade, coat)
   drawEars(c, shape, skin, shade)
   drawHead(c, mask, skin, shade)
-  // Style parts first, core features on top of them
+  // Style parts first, then the core area is cleared back to bare skin, then core features
+  const bare = [...c.px]
   drawBeard(c, face.beard, mask, hair)
   drawHair(c, face.hair === 3 ? 1 : face.hair, shape, mask, hair, hairLight)
+  const keepOut = coreKeepOut()
+  for (let i = 0; i < keepOut.length; i++) if (keepOut[i]) c.px[i] = bare[i] ?? null
   drawBrows(c, face.brows)
   drawEyes(c, face.eyes, darken(shade, 0.85))
   drawNose(c, face.nose, darken(shade, 0.78))
   drawScar(c, face.scar, face.skin % SKIN.length)
-  clearMouthArea(c, mask, skin)
   drawMouth(c, face.mouth)
   drawGlassesFrames(c, face.glasses)
   drawHat(c, face.hat, coat)
@@ -592,7 +608,8 @@ function toHex(r: number, g: number, b: number, a: number): string {
 export function sepia(color: string): string {
   const [r, g, b, a] = parseColor(color)
   const lum = (0.3 * r + 0.59 * g + 0.11 * b) / 255
-  const t = Math.max(0, Math.min(1, (lum - 0.12) / 0.68))
+  // Shadows are lifted so features on dark skin stay readable
+  const t = Math.pow(Math.max(0, Math.min(1, (lum - 0.06) / 0.88)), 0.75)
   return toHex(34 + t * 208, 24 + t * 186, 16 + t * 140, a)
 }
 

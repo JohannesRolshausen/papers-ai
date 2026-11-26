@@ -35,6 +35,24 @@ const INCIDENTS: { kind: IncidentKind; label: string }[] = [
   { kind: 'letter', label: 'Suspicious letter' },
 ]
 
+const SHORT_TOOL: Record<DeepToolId, string> = {
+  registry: 'Registry',
+  fingerprints: 'Fingerprints',
+  bodyScan: 'Body scan',
+  verifyLetter: 'Verify letter',
+}
+
+// Where the papers of a new person land: two columns, then fanned on top
+const DOC_SPOTS: [number, number][] = [
+  [14, 14],
+  [384, 14],
+  [14, 318],
+  [384, 318],
+  [196, 160],
+  [100, 90],
+  [290, 240],
+]
+
 const RULER_MIN = 140
 const RULER_MAX = 210
 const RULER_PX = 3.6
@@ -192,16 +210,37 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const bulletin = bulletinSheet(ctx.bulletin)
   const calendar = calendarItem(ctx.date, ctx.dayIndex)
   calendar.classList.add('desk-fixed')
-  for (const [node, left, top] of [
-    [bulletin, 470, 8],
-    [rulebook.root, 330, 200],
-  ] as const) {
-    placeAt(node, left, top)
-    makeDraggable(node, { bounds: deskArea, canDrag: () => !inspecting && !armed })
-    deskArea.append(node)
-  }
-  placeAt(calendar, 14, 576)
+  placeAt(calendar, 640, 592)
   deskArea.append(calendar)
+  // Rulebook and bulletin can be put away to make room; on day 1 both start open
+  const panels = [
+    { node: rulebook.root, left: 316, top: 150, label: 'Rulebook' },
+    { node: bulletin, left: 404, top: 8, label: 'Bulletin' },
+  ].map((panel) => {
+    const button = el('button', { className: 'btn small ghost panel-btn', text: panel.label })
+    button.type = 'button'
+    const close = el('button', { className: 'panel-close', text: 'x', title: 'Put away' })
+    close.type = 'button'
+    panel.node.append(close)
+    placeAt(panel.node, panel.left, panel.top)
+    makeDraggable(panel.node, { bounds: deskArea, canDrag: () => !inspecting && !armed })
+    deskArea.append(panel.node)
+    const setOpen = (open: boolean) => {
+      panel.node.classList.toggle('hidden', !open)
+      button.classList.toggle('active', open)
+      if (open) bringToFront(panel.node)
+    }
+    button.addEventListener('click', () => {
+      const hidden = panel.node.classList.contains('hidden')
+      const covered = Number(panel.node.style.zIndex || 0) < topDeskZ()
+      setOpen(hidden || covered)
+    })
+    close.addEventListener('click', () => setOpen(false))
+    setOpen(ctx.dayIndex === 1)
+    return button
+  })
+  const topDeskZ = () =>
+    Math.max(0, ...[...deskArea.children].map((c) => Number((c as HTMLElement).style.zIndex || 0)))
 
   const stampApprove = el('button', { className: 'stamp stamp-approve', text: 'APPROVE' })
   const stampDeny = el('button', { className: 'stamp stamp-deny', text: 'DENY' })
@@ -220,7 +259,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     if (!ctx.tools.includes(tool)) continue
     const b = el('button', {
       className: 'btn small tool-btn',
-      text: `${TOOL_NAMES[tool]}`,
+      text: SHORT_TOOL[tool],
       title: `${DEEP_CHECK_MINUTES[tool]} minutes plus a typed form`,
     })
     b.type = 'button'
@@ -230,14 +269,11 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   }
   const incidentButton = el('button', {
     className: 'btn small tool-btn danger',
-    text: 'Incident report',
+    text: 'Incident',
+    title: 'File an incident report',
   })
   incidentButton.type = 'button'
   incidentButton.dataset.action = 'incident'
-  const rulebookButton = el('button', { className: 'btn small ghost', text: 'Rulebook' })
-  rulebookButton.type = 'button'
-  const bulletinButton = el('button', { className: 'btn small ghost', text: 'Bulletin' })
-  bulletinButton.type = 'button'
   const inspectBanner = el('div', { className: 'inspect-banner hidden' })
   const toolbar = el(
     'div',
@@ -246,8 +282,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     ...deepButtons.values(),
     incidentButton,
     el('div', { className: 'tb-spacer' }),
-    rulebookButton,
-    bulletinButton,
+    ...panels,
   )
   const modalLayer = el('div', { className: 'modal-layer hidden' })
   const desk = el(
@@ -297,8 +332,8 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     const a = port.current()
     const active = a !== null && !decided
     const blocked = busy || modalOpen || finished || paused
-    nextButton.disabled = blocked || active || port.waiting() === 0
-    nextButton.textContent = port.waiting() === 0 && !active ? 'Queue empty' : 'Call next'
+    nextButton.disabled = blocked || active
+    nextButton.textContent = port.waiting() === 0 && !active ? 'Close booth' : 'Call next'
     for (const b of questionButtons) b.disabled = blocked || !active
     discrepancyButton.disabled = blocked || !active || !discrepancy
     discrepancyButton.textContent = discrepancy
@@ -311,7 +346,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     for (const [tool, b] of deepButtons) {
       const notice = port.deviceNotice(tool)
       b.disabled = blocked || !active || !deepToolUsable(tool, a)
-      b.textContent = notice ? `${TOOL_NAMES[tool]} (!)` : TOOL_NAMES[tool]
+      b.textContent = notice ? `${SHORT_TOOL[tool]} (!)` : SHORT_TOOL[tool]
       b.title = notice ?? `${DEEP_CHECK_MINUTES[tool]} minutes plus a typed form`
     }
     incidentButton.disabled = blocked || !active
@@ -410,7 +445,8 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       const node = renderDocument(doc)
       node.dataset.applicant = a.id
       node.classList.add('arriving')
-      placeAt(node, 14 + i * 34, 14 + i * 40)
+      const [left, top] = DOC_SPOTS[i] ?? [120 + i * 20, 100 + i * 24]
+      placeAt(node, left, top)
       makeDraggable(node, { bounds: deskArea, canDrag: () => !inspecting && !armed })
       deskArea.append(node)
       bringToFront(node)
@@ -825,14 +861,6 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   incidentButton.addEventListener('click', startIncident)
   stampApprove.addEventListener('click', () => arm('approve'))
   stampDeny.addEventListener('click', () => arm('deny'))
-  rulebookButton.addEventListener('click', () => {
-    placeAt(rulebook.root, 330, 200)
-    bringToFront(rulebook.root)
-  })
-  bulletinButton.addEventListener('click', () => {
-    placeAt(bulletin, 470, 8)
-    bringToFront(bulletin)
-  })
 
   // Inspect clicks and stamping are caught before dragging starts
   root.addEventListener(
