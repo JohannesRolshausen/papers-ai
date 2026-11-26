@@ -98,8 +98,8 @@ export function validateApplicant(
   const truth = world.persons[app.personId]
   if (!truth) throw new Error(`Unknown person ${app.personId}`)
   const out: Violation[] = []
-  const add = (code: ViolationCode, ruleId: RuleId, message: string, evidence: Evidence[]) => {
-    out.push({ code, ruleId, message, evidence })
+  const add: AddFn = (code, ruleId, message, evidence, docId = null) => {
+    out.push({ code, ruleId, message, evidence, docId })
   }
   const active = (id: RuleId) => hasRule(ctx.rules, id)
   const today = ctx.date
@@ -255,6 +255,7 @@ export function validateApplicant(
         active('revoked_list') ? 'revoked_list' : 'documents_authentic',
         `Passport ${passport.number} is revoked.`,
         evidence,
+        passport.id,
       )
     }
   }
@@ -563,7 +564,14 @@ export function validateApplicant(
   return out
 }
 
-type AddFn = (code: ViolationCode, ruleId: RuleId, message: string, evidence: Evidence[]) => void
+type AddFn = (
+  code: ViolationCode,
+  ruleId: RuleId,
+  message: string,
+  evidence: Evidence[],
+  // The document a deep check of one document (registry, letter) must look at
+  docId?: string | null,
+) => void
 
 function checkNameAndNumber(
   doc: Exclude<NumberedDocument, Passport>,
@@ -621,6 +629,7 @@ function checkNumberedDocument(
           'Seal differs from the reference.',
         ),
       ],
+      doc.id,
     )
   }
   const record: RegistryRecord | undefined = world.registry[doc.number]
@@ -630,15 +639,20 @@ function checkNumberedDocument(
       'documents_authentic',
       `${title} ${doc.number} is not in the registry.`,
       [viaTool('registry', `No record of ${title.toLowerCase()} ${doc.number}.`)],
+      doc.id,
     )
     return
   }
   const diffs = registryDifferences(doc, record)
   if (diffs.length > 0) {
     const shown = diffs.map((f) => `${f}: ${record.fields[f]}`).join(', ')
-    add('DOC_ALTERED', 'documents_authentic', `${title} was altered (${diffs.join(', ')}).`, [
-      viaTool('registry', `Registry record differs: ${shown}.`),
-    ])
+    add(
+      'DOC_ALTERED',
+      'documents_authentic',
+      `${title} was altered (${diffs.join(', ')}).`,
+      [viaTool('registry', `Registry record differs: ${shown}.`)],
+      doc.id,
+    )
   }
 }
 
@@ -668,7 +682,13 @@ function checkLetter(letter: Letter, ctx: DayContext, add: AddFn): void {
       ),
     )
   }
-  add('FORGED_LETTER', 'documents_authentic', `Forged letter: "${letter.title}".`, evidence)
+  add(
+    'FORGED_LETTER',
+    'documents_authentic',
+    `Forged letter: "${letter.title}".`,
+    evidence,
+    letter.id,
+  )
 }
 
 function wantedEvidence(

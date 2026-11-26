@@ -3,7 +3,10 @@
 
 import type { DeepToolId, ToolId } from '../config'
 import { formatDocDate } from '../core/dates'
+import type { Purpose } from '../core/documents'
 import { displayName } from '../core/documents'
+import { findDocument } from '../core/people'
+import { hashString } from '../core/rng'
 import type {
   AiMode,
   Applicant,
@@ -13,13 +16,15 @@ import type {
   ViolationCode,
   WorldState,
 } from '../core/types'
-import { countryName } from '../core/world'
+import { OCCUPATIONS, countryName } from '../core/world'
 import type { DayBriefing } from './briefing'
 import type {
   BaseProblemId,
   DayPlan,
   Demeanor,
+  LegitQuirk,
   LeverPlan,
+  LeverType,
   ScriptedLine,
   TechniqueId,
 } from './schema'
@@ -45,6 +50,9 @@ export interface ApplicantObservation {
   deepChecks: DeepToolId[]
   reports: IncidentKind[]
   bribeAccepted: boolean
+  legitQuirk: LegitQuirk
+  lever: LeverType
+  leverReal: boolean
   leverOutcome: string | null
 }
 
@@ -100,6 +108,18 @@ export interface PersonaDossier {
   lever: LeverPlan
   scriptedLines: ScriptedLine[]
   openingLine: string
+  // What the papers say. Infiltrators stick to these claims, legit travelers tell the truth.
+  claimed: ClaimedFacts
+}
+
+export interface ClaimedFacts {
+  nationality: string
+  issuingCity: string | null
+  purpose: Purpose
+  durationDays: number
+  occupation: string
+  employer: string | null
+  hasLetter: boolean
 }
 
 export interface TranscriptLine {
@@ -112,6 +132,7 @@ export interface InspectorQuestion {
   text: string
   // For discrepancy questions: what the inspector found
   discrepancy: string | null
+  code: ViolationCode | null
 }
 
 export interface RespondRequest {
@@ -182,5 +203,33 @@ export function buildDossier(applicant: Applicant, world: WorldState): PersonaDo
     lever: plan.lever,
     scriptedLines: plan.scripted_lines,
     openingLine: plan.opening_line,
+    claimed: claimedFacts(applicant, world),
+  }
+}
+
+// The story the papers tell. Someone who secretly comes to work claims an innocent job.
+export function claimedFacts(applicant: Applicant, world: WorldState): ClaimedFacts {
+  const truth = world.persons[applicant.personId]
+  if (!truth) throw new Error(`Unknown person ${applicant.personId}`)
+  const docs = applicant.documents
+  const passport = findDocument(docs, 'passport')
+  const permit = findDocument(docs, 'entryPermit')
+  const pass = findDocument(docs, 'workPass')
+  const purpose: Purpose = permit?.purpose ?? (truth.isDiplomat ? 'visit' : truth.purpose)
+  const durationDays = permit?.durationDays ?? truth.durationDays
+  let occupation = truth.occupation
+  if (truth.isDiplomat) occupation = 'Diplomat'
+  if (purpose !== 'work' && truth.purpose === 'work' && !pass) {
+    const neutral = OCCUPATIONS.filter((o) => o !== 'Retired' && o !== 'Student')
+    occupation = neutral[hashString(applicant.id) % neutral.length] ?? 'Clerk'
+  }
+  return {
+    nationality: countryName(passport?.country ?? truth.nationality),
+    issuingCity: passport?.issuingCity ?? null,
+    purpose,
+    durationDays,
+    occupation,
+    employer: pass?.employer ?? (purpose === 'work' ? (truth.employer?.name ?? null) : null),
+    hasLetter: docs.some((d) => d.type === 'letter'),
   }
 }

@@ -167,6 +167,8 @@ export interface Violation {
   ruleId: RuleId
   message: string
   evidence: Evidence[]
+  // Set when the problem sits on one document (seal, registry record, forged letter, revoked number)
+  docId: string | null
 }
 
 // ---------- Applicants ----------
@@ -229,8 +231,26 @@ export type PlayerAction =
       answer: string
       minute: number
     }
-  | { type: 'deepCheck'; tool: DeepToolId; typedMs: number; typos: number; minute: number }
-  | { type: 'report'; incident: IncidentKind; minute: number }
+  | {
+      type: 'deepCheck'
+      tool: DeepToolId
+      docId: string | null
+      revealed: ViolationCode[]
+      // Length of the typed documentation line, time and wrong keystrokes
+      chars: number
+      typedMs: number
+      typos: number
+      minute: number
+    }
+  | {
+      type: 'report'
+      incident: IncidentKind
+      chars: number
+      typedMs: number
+      typos: number
+      minute: number
+    }
+  | { type: 'bribe'; accepted: boolean; minute: number }
   | { type: 'decision'; decision: Decision; minute: number }
 
 export type Decision = 'approve' | 'deny'
@@ -246,6 +266,8 @@ export interface ApplicantOutcome {
   bribeAccepted: boolean
   reported: IncidentKind[]
   correct: boolean | null
+  // Whether the person got to deliver their bribe, threat or complaint
+  leverPresented: boolean
 }
 
 // ---------- Consequences and events ----------
@@ -260,6 +282,9 @@ export type GameEventKind =
   | 'bribe_kept'
   | 'note'
 
+// A sabotaged tool either takes longer or does not work at all for one day
+export type SabotageMode = 'slow' | 'down'
+
 export interface GameEvent {
   day: number
   kind: GameEventKind
@@ -267,6 +292,9 @@ export interface GameEvent {
   moneyDelta: number
   minutesLost: number
   sabotagedTool: DeepToolId | null
+  sabotageMode: SabotageMode | null
+  // The applicant whose case caused this event, if any
+  sourceApplicantId: string | null
 }
 
 export interface PendingConsequence {
@@ -277,6 +305,7 @@ export interface PendingConsequence {
   moneyDelta: number
   minutesLost: number
   sabotagedTool: DeepToolId | null
+  sabotageMode: SabotageMode | null
 }
 
 // ---------- Adversary bookkeeping ----------
@@ -323,8 +352,13 @@ export interface DayRecord {
   context: DayContext
   plan: StoredPlan
   applicants: Applicant[]
+  // Filled when the day closes, one outcome per applicant in queue order
   outcomes: ApplicantOutcome[]
+  // Morning consequences first, then what happened at the end of the shift
   events: GameEvent[]
+  // Shown to the player when the plan came from a fallback
+  notice: string | null
+  closed: boolean
 }
 
 export interface GameState {
