@@ -242,14 +242,14 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const bulletin = bulletinSheet(ctx.bulletin)
   const calendar = calendarItem(ctx.date, ctx.dayIndex)
   calendar.classList.add('desk-fixed')
-  placeAt(calendar, 640, 592)
+  placeAt(calendar, 754, 566)
   deskArea.append(calendar)
   const canDrag = () => !inspecting && !armed
   const topDeskZ = () =>
     Math.max(0, ...[...deskArea.children].map((c) => Number((c as HTMLElement).style.zIndex || 0)))
   // Rulebook and bulletin can be put away to make room; on day 1 both start open
   const panels = [
-    { node: rulebook.root, left: 316, top: 150, label: 'Rulebook' },
+    { node: rulebook.root, left: 356, top: 222, label: 'Rulebook' },
     { node: bulletin, left: 404, top: 8, label: 'Bulletin' },
   ].map((panel) => {
     const button = el('button', { className: 'btn small ghost panel-btn', text: panel.label })

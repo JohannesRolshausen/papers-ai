@@ -407,8 +407,8 @@ html.gallery-page body {
 /* ---------- Rulebook ---------- */
 
 .rulebook {
-  width: 420px;
-  height: 470px;
+  width: 390px;
+  height: 460px;
   display: grid;
   grid-template-rows: auto auto 1fr;
   background: #cbbf9f;
@@ -889,7 +889,9 @@ html.gallery-page body {
 
 .window-col {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 330px 40px 150px 1fr;
+  overflow: hidden;
   background: #2a2c2a;
   box-shadow: inset -3px 0 0 #121110;
   min-height: 0;
@@ -1038,6 +1040,7 @@ html.gallery-page body {
 }
 
 .questions {
+  min-width: 0;
   padding: 8px;
   display: flex;
   flex-direction: column;
@@ -1047,7 +1050,7 @@ html.gallery-page body {
 
 .q-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 5px;
 }
 
@@ -1062,6 +1065,7 @@ html.gallery-page body {
 
 .q-discrepancy {
   width: 100%;
+  min-width: 0;
 }
 
 .free-row {
@@ -1071,6 +1075,7 @@ html.gallery-page body {
 
 .free-input {
   flex: 1;
+  min-width: 0;
   font-family: var(--type-font);
   font-size: 18px;
   padding: 2px 6px;

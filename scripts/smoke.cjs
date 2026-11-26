@@ -3,7 +3,10 @@
 // offline adversary and fails on any console error.
 // Playwright comes preinstalled in the development container: require('playwright').
 //
-// Options: --shots <dir> saves screenshots of bulletin, booth and evening report there.
+// Options:
+//   --shots <dir>  saves screenshots of bulletin, booth and evening report there
+//   --full         then plays the remaining days to the final report, with one reload and
+//                  Continue in between, deciding by the ground truth from the test hook
 
 const { chromium } = require('playwright')
 const path = require('node:path')
@@ -13,6 +16,7 @@ const SEED = 7
 const args = process.argv.slice(2)
 const shotsIndex = args.indexOf('--shots')
 const shotsDir = shotsIndex >= 0 ? path.resolve(args[shotsIndex + 1] ?? 'shots') : null
+const full = args.includes('--full')
 
 function refKey(ref) {
   switch (ref.kind) {
@@ -144,7 +148,7 @@ async function run(url) {
       await page.click('[data-question=discrepancy]')
       await page.waitForFunction(() => [...document.querySelectorAll('.tr-applicant')].length > 1)
       if (shotsDir) {
-        await page.waitForTimeout(400)
+        await page.waitForTimeout(1500)
         await shot(page, 'booth')
       }
       await page.keyboard.press('i')
@@ -170,8 +174,8 @@ async function run(url) {
       check(true, `deep check filed and printed: ${line}`)
       deepChecked = true
     }
-    if (!decision) decision = approved ? 'deny' : 'approve'
-    if (approved && denied) decision = 'approve'
+    // Decide by the truth, so the game can go on to the final report
+    if (!decision) decision = (await admissible(page)) ? 'approve' : 'deny'
     await stamp(page, decision)
     if (decision === 'approve') approved = true
     else denied = true
@@ -190,8 +194,70 @@ async function run(url) {
 
   const phase = await page.evaluate(() => JSON.parse(localStorage.getItem('oversight-save')).phase)
   check(phase === 'evening', 'game saved after the shift')
+
+  if (full) {
+    const days = await page.evaluate(
+      () => JSON.parse(localStorage.getItem('oversight-save')).daysTotal,
+    )
+    for (let day = 2; day <= days; day++) {
+      if (day === 3) {
+        await page.reload()
+        await page.click('text=Continue')
+        await page.waitForSelector('.evening-screen')
+        check(true, 'reloaded after day 2 and continued at the evening report')
+      }
+      await page.click('[data-action=evening-continue]')
+      await page.waitForSelector('[data-action=start-shift]:enabled')
+      await page.click('[data-action=start-shift]')
+      // Supervisor reviews from complaints are typed before the shift
+      while (!(await page.locator('.booth').count())) {
+        if (await page.locator('.screen-modal .typing-test').count()) {
+          const line = await page.evaluate(() =>
+            [...document.querySelectorAll('.screen-modal .tt-char')]
+              .map((c) => c.textContent)
+              .join(''),
+          )
+          await page.keyboard.type(line, { delay: 2 })
+          await page.keyboard.press('Enter')
+          check(true, `supervisor review typed on day ${day}`)
+        }
+        await page.waitForTimeout(100)
+      }
+      const count = await playByTruth(page)
+      await page.click('[data-action=end-shift]')
+      await page.waitForSelector('.evening-screen')
+      check(true, `day ${day}: ${count} people processed, evening report shown`)
+    }
+    await page.click('[data-action=evening-continue]')
+    await page.waitForSelector('.end-screen')
+    const final = await page.locator('.end-screen.final').count()
+    check(final === 1, 'final report reached without dismissal')
+  }
+
   check(errors.length === 0, `no console errors ${errors.length ? JSON.stringify(errors) : ''}`)
   await browser.close()
+}
+
+async function admissible(page) {
+  return page.evaluate(() => window.__oversightTest.current().admissible)
+}
+
+// Processes the whole line with correct decisions, then closes the booth
+async function playByTruth(page) {
+  let count = 0
+  for (let i = 0; i < 40; i++) {
+    if (await page.locator('[data-action=end-shift]').count()) return count
+    const label = await page.textContent('[data-action=call-next]')
+    if (label.includes('Close')) {
+      await page.click('[data-action=call-next]')
+      return count
+    }
+    await page.click('[data-action=call-next]')
+    await page.waitForSelector('.doc[data-applicant]')
+    await stamp(page, (await admissible(page)) ? 'approve' : 'deny')
+    count += 1
+  }
+  return count
 }
 
 async function main() {
