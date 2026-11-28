@@ -1,6 +1,6 @@
-// Game application: screen flow from the title to the final report.
+// Game application: screen flow from the title to the final report and debriefing.
 // The shift controller (DayLoop) runs the game, the screens only show it.
-// The game is saved after every phase.
+// The game is saved after every phase, with clear feedback if storage is full or damaged.
 
 import './styles.css'
 import { AdversaryKeyError } from '../ai/adversary'
@@ -16,9 +16,11 @@ import { ADVERSARY_MODES, createAdversaries, freeQuestionsEnabled } from '../ai/
 import { DIFFICULTIES } from '../config'
 import type { DayStart } from '../core/dayLoop'
 import { DayLoop } from '../core/dayLoop'
+import type { DebriefReport } from '../core/debrief'
+import { buildDebrief } from '../core/debrief'
 import type { EveningReport } from '../core/economy'
 import { eveningReport, formatMoney } from '../core/economy'
-import { clearSave, contextForDay, createNewGame, loadGame, saveGame } from '../core/state'
+import { clearSave, contextForDay, createNewGame, inspectSave, saveGame } from '../core/state'
 import type { GameState } from '../core/types'
 import { createScriptedClaudeFetch } from '../dev/mockClaude'
 import type { MockFetch } from '../dev/mockClaude'
@@ -29,10 +31,12 @@ import { loadApiKey, saveApiKey } from './keyStore'
 import type { BulletinScreen } from './screens/bulletin'
 import { bulletinScreen } from './screens/bulletin'
 import { boothScreen } from './screens/booth'
+import { debriefScreen } from './screens/debrief'
 import { endScreen } from './screens/end'
 import { eveningScreen } from './screens/evening'
 import type { SetupChoice } from './screens/setup'
 import { setupScreen } from './screens/setup'
+import type { SaveNotice, SaveSummary } from './screens/title'
 import { titleScreen } from './screens/title'
 import { createStage } from './stage'
 
@@ -91,24 +95,72 @@ function morningNotices(day: DayStart): string[] {
   return notices
 }
 
+function saveLabel(state: GameState): string {
+  return `${DIFFICULTIES[state.difficulty].label} · day ${state.dayIndex} of ${state.daysTotal} · ${formatMoney(state.economy.money)}${state.settings.aiMode === 'claude' ? ' · Claude' : ''}`
+}
+
 class App {
   private loop: DayLoop | null = null
   private claude: ClaudeAdversary | null = null
   // The key typed in this tab, in case the browser refuses to store it
   private sessionKey: string | null = null
   private cleanup: (() => void) | null = null
+  private readonly screenHost: HTMLElement
+  private readonly saveWarning: HTMLElement
+  private readonly saveWarningText: HTMLElement
 
-  constructor(private readonly stage: HTMLElement) {}
+  constructor(stage: HTMLElement) {
+    this.screenHost = el('div', { className: 'screen-host' })
+    this.saveWarningText = el('span', { className: 'save-warning-text' })
+    const dismiss = el('button', { className: 'btn small ghost', text: 'Dismiss' })
+    dismiss.type = 'button'
+    dismiss.addEventListener('click', () => this.saveWarning.classList.add('hidden'))
+    this.saveWarning = el(
+      'div',
+      { className: 'save-warning hidden', attrs: { role: 'alert' } },
+      this.saveWarningText,
+      dismiss,
+    )
+    stage.replaceChildren(this.screenHost, this.saveWarning)
+  }
 
   private show(node: HTMLElement, cleanup: (() => void) | null = null): void {
     this.cleanup?.()
     this.cleanup = cleanup
-    this.stage.replaceChildren(node)
+    this.screenHost.replaceChildren(node)
   }
 
-  private save(): void {
+  private showSaveWarning(message: string): void {
+    this.saveWarningText.textContent = message
+    this.saveWarning.classList.remove('hidden')
+  }
+
+  private hideSaveWarning(): void {
+    this.saveWarning.classList.add('hidden')
+  }
+
+  private save(): boolean {
+    if (!this.loop) return true
     const store = storage()
-    if (store && this.loop) saveGame(this.loop.state, store)
+    if (!store) {
+      this.showSaveWarning(
+        'Could not save progress: browser storage is blocked. Progress stays active only in this tab.',
+      )
+      return false
+    }
+    const ok = saveGame(this.loop.state, store)
+    if (!ok) {
+      const claudeNote =
+        this.loop.state.settings.aiMode === 'claude'
+          ? ' The Claude planning history may have filled browser storage.'
+          : ''
+      this.showSaveWarning(
+        `Could not save progress (browser storage is full or blocked).${claudeNote} Your game continues in this tab, but reloading will lose unsaved progress.`,
+      )
+      return false
+    }
+    this.hideSaveWarning()
+    return true
   }
 
   private attach(state: GameState): DayLoop {
@@ -130,17 +182,49 @@ class App {
   }
 
   title(): void {
+    this.hideSaveWarning()
     const store = storage()
-    const saved = store ? loadGame(store) : null
-    const resumable = saved && saved.phase !== 'final' && saved.phase !== 'gameover' ? saved : null
+    const checked = inspectSave(store)
+    let resumable: GameState | null = null
+    let finished: GameState | null = null
+    let notice: SaveNotice | null = null
+
+    if (checked.status === 'ok') {
+      if (checked.state.phase !== 'final' && checked.state.phase !== 'gameover') {
+        resumable = checked.state
+      } else {
+        finished = checked.state
+      }
+    } else if (checked.status === 'corrupted') {
+      notice = {
+        kind: 'corrupted',
+        text: `A saved game was found, but it could not be loaded (${checked.reason})`,
+        onClear: () => {
+          if (store) clearSave(store)
+          this.title()
+        },
+      }
+    } else if (checked.status === 'unavailable') {
+      notice = {
+        kind: 'unavailable',
+        text: 'Browser storage is unavailable. Progress will not be saved across reloads.',
+      }
+    }
+
+    const saveSummary: SaveSummary | null = resumable ? { label: saveLabel(resumable) } : null
+    const debriefSummary: SaveSummary | null = finished
+      ? {
+          label: `${finished.phase === 'gameover' ? 'Dismissed' : 'Completed'} · ${saveLabel(finished)}`,
+        }
+      : null
+
     this.show(
       titleScreen({
-        save: resumable
-          ? {
-              label: `${DIFFICULTIES[resumable.difficulty].label} · day ${resumable.dayIndex} of ${resumable.daysTotal} · ${formatMoney(resumable.economy.money)}${resumable.settings.aiMode === 'claude' ? ' · Claude' : ''}`,
-            }
-          : null,
+        save: saveSummary,
+        lastDebrief: debriefSummary,
+        notice,
         onContinue: () => resumable && this.resume(resumable),
+        onLastDebrief: finished ? () => this.openDebrief(finished) : undefined,
         onNewGame: () => this.setup(),
       }),
     )
@@ -180,16 +264,23 @@ class App {
   }
 
   private resume(state: GameState): void {
-    const loop = this.attach(state)
-    // The controller turns a save from the middle of a shift back into its morning
-    if (loop.phase === 'evening') {
-      const last = state.days[state.days.length - 1]
-      if (last) {
-        this.evening(eveningReport(state, last))
-        return
+    try {
+      const loop = this.attach(state)
+      // The controller turns a save from the middle of a shift back into its morning
+      if (loop.phase === 'evening') {
+        const last = state.days[state.days.length - 1]
+        if (last) {
+          this.evening(eveningReport(state, last))
+          return
+        }
       }
+      this.morning()
+    } catch {
+      const store = storage()
+      if (store) clearSave(store)
+      this.loop = null
+      this.title()
     }
-    this.morning()
   }
 
   // Shows the bulletin of the coming day at once and prepares the day behind it
@@ -324,6 +415,7 @@ class App {
     const loop = this.loop
     if (!loop) return this.title()
     loop.beginShift()
+    this.save()
     const booth = boothScreen({
       loop,
       shiftRealSeconds: loop.state.settings.shiftRealSeconds,
@@ -343,7 +435,7 @@ class App {
     if (!loop) return this.title()
     const state = loop.state
     const screen = eveningScreen(report, state.daysTotal, () => {
-      if (state.phase === 'final' || state.phase === 'gameover') this.end(state.phase)
+      if (state.phase === 'final' || state.phase === 'gameover') this.end(state)
       else this.morning()
     })
     // Ask for tomorrow's plan now, so the morning loads quickly
@@ -351,26 +443,31 @@ class App {
     this.show(screen.root)
   }
 
-  private end(kind: 'final' | 'gameover'): void {
-    const state = this.loop?.state
-    const lines: string[] = []
-    if (state) {
-      const processed = state.days.reduce(
-        (sum, d) => sum + d.outcomes.filter((o) => o.decision !== 'none').length,
-        0,
-      )
-      lines.push(
-        `Days worked: ${state.days.length} of ${state.daysTotal}`,
-        `People processed: ${processed}`,
-        `Savings: ${formatMoney(state.economy.money)}`,
-      )
-    }
+  private leaveToTitle(): void {
+    const store = storage()
+    if (store) clearSave(store)
+    this.loop = null
+    this.claude = null
+    this.title()
+  }
+
+  private end(state: GameState, report: DebriefReport = buildDebrief(state)): void {
     this.show(
-      endScreen({ kind, lines }, () => {
-        const store = storage()
-        if (store) clearSave(store)
-        this.loop = null
-        this.title()
+      endScreen({
+        report,
+        onDebrief: () => this.openDebrief(state, report),
+        onTitle: () => this.leaveToTitle(),
+      }),
+    )
+  }
+
+  private openDebrief(state: GameState, report: DebriefReport = buildDebrief(state)): void {
+    this.show(
+      debriefScreen({
+        state,
+        report,
+        onBackToEnd: () => this.end(state, report),
+        onTitle: () => this.leaveToTitle(),
       }),
     )
   }

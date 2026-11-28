@@ -4,6 +4,7 @@
 
 import { compareTyping } from '../../core/docLines'
 import type { TypingResult } from '../../core/docLines'
+import { playKey } from '../audio'
 import { el } from '../dom'
 
 export interface TypingTestOptions {
@@ -100,7 +101,16 @@ export function createTypingTest(options: TypingTestOptions): TypingTest {
     // Count every wrong keystroke, even if it is corrected later
     if (value.length > previous.length) {
       const states = compareTyping(line, value).states
-      for (let i = previous.length; i < value.length; i++) if (states[i] !== 'correct') typos += 1
+      let hadWrong = false
+      for (let i = previous.length; i < value.length; i++) {
+        if (states[i] !== 'correct') {
+          typos += 1
+          hadWrong = true
+        }
+      }
+      playKey(hadWrong)
+    } else if (value.length < previous.length) {
+      playKey(false)
     }
     previous = value
     render()

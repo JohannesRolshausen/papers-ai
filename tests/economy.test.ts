@@ -228,4 +228,57 @@ describe('consequences of mistakes', () => {
     expect(leverOutcome(day.applicants[0]!, day.outcomes[0]!)).toMatch(/Retaliation follows/)
     expect(leverOutcome(day.applicants[1]!, day.outcomes[1]!)).toBeNull()
   })
+
+  it('awards a bonus and neutralizes a complaint when a forged letter is reported', async () => {
+    const s = setup(
+      (day) =>
+        day === 3
+          ? [
+              entry({
+                kind: 'infiltrator',
+                base_problem: 'expired_passport',
+                techniques: [
+                  {
+                    type: 'fake_letter',
+                    target_doc: null,
+                    flaw: null,
+                    field: null,
+                    subtle: true,
+                  },
+                ],
+                letter: {
+                  title: 'Ministry Waiver',
+                  sender: 'Ministry Office',
+                  body: 'Admit bearer without delay.',
+                  claims_exemption: true,
+                },
+                lever: { type: 'complaint', real: true, line: 'I will report you.', amount: null },
+              }),
+            ]
+          : [],
+      { loop: { odds: NEVER } },
+    )
+    await playUntil(s, 3)
+    callFirst(s.loop)
+    const form = s.loop.openForm('incident', { incident: 'letter' })
+    expect(form.ok).toBe(true)
+    if (form.ok) s.loop.reportIncident(form.form, typed(form.form))
+    decideFully(s.loop, 'deny')
+    s.loop.endShift()
+
+    // Forged letter confirmed for day 4 bonus, and complaint lever neutralized despite no inspect
+    expect(s.state.pending.some((p) => p.kind === 'complaint')).toBe(false)
+    const bonus = s.state.pending.find((p) => p.kind === 'commendation')
+    expect(bonus?.dueDay).toBe(4)
+    expect(bonus?.moneyDelta).toBe(CONSEQUENCES.forgedLetterBonus)
+  })
+
+  it('notes when a reported letter turns out not to be forged', async () => {
+    const { report, s } = await oneDecision(entry(), 'approve', NEVER, (x) => {
+      const form = x.loop.openForm('incident', { incident: 'letter' })
+      if (form.ok) x.loop.reportIncident(form.form, typed(form.form))
+    })
+    expect(report.events.some((e) => e.kind === 'note' && /no forgery/i.test(e.text))).toBe(true)
+    expect(s.state.pending.some((p) => p.kind === 'commendation')).toBe(false)
+  })
 })

@@ -1,4 +1,4 @@
-// Title screen: name, premise, continue or start a new game.
+// Title screen: name, premise, continue or start a new game, and damaged-save recovery.
 
 import { el } from '../dom'
 
@@ -6,9 +6,18 @@ export interface SaveSummary {
   label: string
 }
 
+export interface SaveNotice {
+  kind: 'corrupted' | 'unavailable'
+  text: string
+  onClear?: () => void
+}
+
 export interface TitleOptions {
   save: SaveSummary | null
+  lastDebrief?: SaveSummary | null
+  notice?: SaveNotice | null
   onContinue(): void
+  onLastDebrief?: () => void
   onNewGame(): void
 }
 
@@ -73,13 +82,41 @@ function titleArt(): HTMLCanvasElement {
 export function titleScreen(options: TitleOptions): HTMLElement {
   const continueButton = el('button', { className: 'btn primary big', text: 'Continue' })
   continueButton.type = 'button'
+  continueButton.dataset.action = 'continue-game'
   continueButton.addEventListener('click', options.onContinue)
+
   const newButton = el('button', {
     className: `btn big ${options.save ? 'ghost' : 'primary'}`,
     text: 'New game',
   })
   newButton.type = 'button'
+  newButton.dataset.action = 'new-game'
   newButton.addEventListener('click', options.onNewGame)
+
+  let debriefButton: HTMLButtonElement | null = null
+  if (options.lastDebrief && options.onLastDebrief) {
+    debriefButton = el('button', { className: 'btn small ghost', text: 'Open last debrief' })
+    debriefButton.type = 'button'
+    debriefButton.dataset.action = 'last-debrief'
+    debriefButton.addEventListener('click', options.onLastDebrief)
+  }
+
+  let noticeNode: HTMLElement | null = null
+  if (options.notice) {
+    let clearBtn: HTMLButtonElement | null = null
+    if (options.notice.onClear) {
+      clearBtn = el('button', { className: 'btn small ghost', text: 'Clear damaged save' })
+      clearBtn.type = 'button'
+      clearBtn.dataset.action = 'clear-corrupt-save'
+      clearBtn.addEventListener('click', options.notice.onClear)
+    }
+    noticeNode = el(
+      'div',
+      { className: `title-notice ${options.notice.kind}` },
+      el('span', { className: 'title-notice-text', text: options.notice.text }),
+      clearBtn,
+    )
+  }
 
   return el(
     'div',
@@ -95,12 +132,17 @@ export function titleScreen(options: TitleOptions): HTMLElement {
       'where you stop looking. You have the opposite goal, and you still have to let every ',
       'legitimate traveler in.',
     ),
+    noticeNode,
     el(
       'div',
       { className: 'title-buttons' },
       options.save ? continueButton : null,
       options.save ? el('div', { className: 'title-save', text: options.save.label }) : null,
       newButton,
+      debriefButton,
+      options.lastDebrief
+        ? el('div', { className: 'title-save', text: options.lastDebrief.label })
+        : null,
     ),
     el('div', {
       className: 'title-foot',

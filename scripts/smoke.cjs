@@ -1,20 +1,40 @@
-// Browser smoke test for the game interface. Run with `npm run smoke`.
-// Builds the game, serves it with `vite preview`, plays day 1 of an Easy game against the
-// offline adversary and fails on any console error.
-// Playwright comes preinstalled in the development container: require('playwright').
+// Browser smoke and end-to-end test for OVERSIGHT.
+// Run with `npm run smoke`, `npm run smoke:full` or `npm run smoke:claude`.
+// Builds the game, serves it with `vite preview`, drives Chromium through Playwright and fails on
+// any console or page error.
 //
 // Options:
-//   --shots <dir>  saves screenshots of bulletin, booth and evening report there
-//   --full         then plays the remaining days to the final report, with one reload and
-//                  Continue in between, deciding by the ground truth from the test hook
+//   --shots <dir>  saves 2x screenshots of the screens visited in this run
+//   --full         plays a full 7-day Easy game offline: corrupted-save recovery, mute toggle,
+//                  day 1 inspection + deep check with typo + stamps, evening and mid-shift reload
+//                  with Continue, supervisor reviews, final report, full debrief with visible AI
+//                  strategy, missed evidence, regulars, AI log, and JSON export download
 //   --claude       plays in Claude mode against a scripted stand-in for the API
 //                  (?test&mock=claude): key check, plan from Claude, a streamed free question,
 //                  the plan for day 2 requested during the evening, and the key dialog after
 //                  a reload without a stored key
 
-const { chromium } = require('playwright')
 const path = require('node:path')
 const fs = require('node:fs')
+
+function loadPlaywright() {
+  const candidates = [
+    process.env.PLAYWRIGHT_MODULE,
+    'playwright',
+    'playwright-core',
+    '/opt/pyenv/versions/3.12.16/lib/python3.12/site-packages/playwright/driver/package',
+  ].filter(Boolean)
+  for (const id of candidates) {
+    try {
+      return require(id)
+    } catch {
+      // Try the next resolution candidate
+    }
+  }
+  throw new Error('Playwright module not found. Install playwright or set PLAYWRIGHT_MODULE.')
+}
+
+const { chromium } = loadPlaywright()
 
 const SEED = 7
 const args = process.argv.slice(2)
@@ -99,12 +119,31 @@ async function openPanelFor(page, key) {
   }
 }
 
+async function openBoothWithReviews(page, day) {
+  await page.waitForSelector('[data-action=start-shift]:enabled')
+  await page.click('[data-action=start-shift]')
+  // Supervisor reviews from complaints are typed before the shift
+  while (!(await page.locator('.booth').count())) {
+    if (await page.locator('.screen-modal .typing-test').count()) {
+      const line = await page.evaluate(() =>
+        [...document.querySelectorAll('.screen-modal .tt-char')].map((c) => c.textContent).join(''),
+      )
+      await page.keyboard.type(line, { delay: 2 })
+      await page.keyboard.press('Enter')
+      check(true, `supervisor review typed on day ${day}`)
+    }
+    await page.waitForTimeout(100)
+  }
+}
+
 async function run(url) {
   const browser = await chromium.launch()
-  const page = await browser.newPage({
+  const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
     deviceScaleFactor: shotsDir ? 2 : 1,
+    acceptDownloads: true,
   })
+  const page = await context.newPage()
   const errors = []
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text())
@@ -116,7 +155,27 @@ async function run(url) {
     localStorage.clear()
     sessionStorage.clear()
   })
-  await page.reload()
+
+  if (full) {
+    // Damaged save handling on the title screen
+    await page.evaluate(() => {
+      localStorage.setItem('oversight-save', '{damaged-json')
+    })
+    await page.reload()
+    await page.waitForSelector('.title-notice.corrupted')
+    check(
+      (await page.locator('[data-action=continue-game]').count()) === 0,
+      'corrupted save hides Continue and shows a clear notice',
+    )
+    await page.click('[data-action=clear-corrupt-save]')
+    check(
+      (await page.locator('.title-notice').count()) === 0,
+      'clearing the damaged save removes the notice',
+    )
+  } else {
+    await page.reload()
+  }
+
   await page.click('text=New game')
   await page.click('[data-difficulty=easy]')
   if (claude) {
@@ -140,6 +199,24 @@ async function run(url) {
   await page.click('[data-action=start-shift]')
   await page.waitForSelector('.booth')
   check(true, 'bulletin dismissed, booth open')
+
+  if (full) {
+    // Verify the mute button toggles and persists its preference in localStorage
+    await page.click('[data-action=toggle-mute]')
+    const mutedState = await page.evaluate(() => ({
+      text: document.querySelector('[data-action=toggle-mute]')?.textContent,
+      stored: localStorage.getItem('oversight-muted'),
+    }))
+    check(
+      mutedState.text === 'Muted [M]' && mutedState.stored === '1',
+      'mute toggle works and persists per device',
+    )
+    await page.click('[data-action=toggle-mute]')
+    check(
+      (await page.textContent('[data-action=toggle-mute]')) === 'Sound [M]',
+      'mute toggle switches back to Sound [M]',
+    )
+  }
 
   let inspected = false
   let deepChecked = false
@@ -224,39 +301,119 @@ async function run(url) {
     const days = await page.evaluate(
       () => JSON.parse(localStorage.getItem('oversight-save')).daysTotal,
     )
+    let slipDay = null
     for (let day = 2; day <= days; day++) {
       if (day === 3) {
+        // Reload at the evening report after day 2 and continue
         await page.reload()
         await page.click('text=Continue')
         await page.waitForSelector('.evening-screen')
         check(true, 'reloaded after day 2 and continued at the evening report')
       }
       await page.click('[data-action=evening-continue]')
-      await page.waitForSelector('[data-action=start-shift]:enabled')
-      await page.click('[data-action=start-shift]')
-      // Supervisor reviews from complaints are typed before the shift
-      while (!(await page.locator('.booth').count())) {
-        if (await page.locator('.screen-modal .typing-test').count()) {
-          const line = await page.evaluate(() =>
-            [...document.querySelectorAll('.screen-modal .tt-char')]
-              .map((c) => c.textContent)
-              .join(''),
-          )
-          await page.keyboard.type(line, { delay: 2 })
-          await page.keyboard.press('Enter')
-          check(true, `supervisor review typed on day ${day}`)
-        }
-        await page.waitForTimeout(100)
+      await openBoothWithReviews(page, day)
+
+      if (day === 4) {
+        // Mid-shift reload: save from phase 'shift' restarts the day cleanly at the morning bulletin
+        await page.reload()
+        await page.click('text=Continue')
+        await page.waitForSelector('.bulletin-screen')
+        check(true, 'reloaded mid-shift on day 4 and continued cleanly at morning bulletin')
+        await openBoothWithReviews(page, day)
       }
-      const count = await playByTruth(page)
+
+      // Let one infiltrator through on day 6 so the debrief shows both stopped and missed clues
+      const letOneSlip = day === 6
+      const { count, slipped } = await playByTruth(page, { letOneSlip })
+      if (slipped) slipDay = day
       await page.click('[data-action=end-shift]')
       await page.waitForSelector('.evening-screen')
-      check(true, `day ${day}: ${count} people processed, evening report shown`)
+      check(
+        true,
+        `day ${day}: ${count} people processed${slipped ? ' (1 infiltrator deliberately admitted for debrief check)' : ''}, evening report shown`,
+      )
     }
+
     await page.click('[data-action=evening-continue]')
     await page.waitForSelector('.end-screen')
     const final = await page.locator('.end-screen.final').count()
     check(final === 1, 'final report reached without dismissal')
+    check((await page.locator('.end-grade-stamp').count()) === 1, 'final report shows grade stamp')
+    await shot(page, 'end-report')
+
+    // Open full debriefing
+    await page.click('[data-action=open-debrief]')
+    await page.waitForSelector('.debrief-screen')
+    check((await page.locator('.db-stat').count()) >= 6, 'debrief overview shows key metrics')
+    await shot(page, 'debrief-overview')
+
+    // Day-by-day timeline: visible AI strategy and highlighted unused/missed evidence
+    await page.click('[data-tab=timeline]')
+    await page.waitForSelector('.db-strategy-card')
+    const day1Strategy = (await page.textContent('.db-strategy-text')) ?? ''
+    const day1Notes = (await page.textContent('.db-notes-text')) ?? ''
+    check(
+      day1Strategy.trim().length > 10,
+      `day 1 AI strategy visible: ${day1Strategy.slice(0, 60)}...`,
+    )
+    check(day1Notes.trim().length > 5, 'day 1 AI notes for future self visible')
+
+    if (slipDay) {
+      await page.click(`.db-day-btn[data-day="${slipDay}"]`)
+      await page.click('.db-filter-btns [data-filter=missed]')
+      await page.waitForSelector('.db-ev-row.ev-missed')
+      check(true, `day ${slipDay} highlights missed/unused evidence prominently`)
+      await shot(page, 'debrief-timeline')
+      // Expand the missed infiltrator's papers & visuals drawer and verify documents render
+      const missedCard = page.locator('.db-app-card.result-got_through').first()
+      await missedCard.locator('.db-visuals-toggle').click()
+      await page.waitForSelector('.db-visuals')
+      check(true, 'visual comparison and documents drawer opens in debrief')
+    } else {
+      await shot(page, 'debrief-timeline')
+    }
+
+    // Regulars tab
+    await page.click('[data-tab=regulars]')
+    const regularsCount = await page.locator('.db-char-card').count()
+    check(regularsCount >= 1, `regulars tab shows ${regularsCount} recurring character arc(s)`)
+    await shot(page, 'debrief-regulars')
+
+    // AI log tab
+    await page.click('[data-tab=ailog]')
+    check(
+      (await page.locator('.db-journal-entry').count()) >= days,
+      'AI log tab shows the offline adversary journal for every day',
+    )
+
+    // Export as JSON and inspect the downloaded file
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.click('[data-action=export-debrief]'),
+    ])
+    const downloadPath = await download.path()
+    check(Boolean(downloadPath), `debrief JSON downloaded (${download.suggestedFilename()})`)
+    const rawExport = fs.readFileSync(downloadPath, 'utf8')
+    const parsed = JSON.parse(rawExport)
+    check(parsed.game === 'OVERSIGHT', 'exported JSON has game header')
+    check(parsed.meta.daysPlayed === days, `exported JSON contains all ${days} days`)
+    check(
+      parsed.days.every(
+        (d) => typeof d.strategySummary === 'string' && d.strategySummary.length > 0,
+      ),
+      'exported JSON contains AI strategy for every day',
+    )
+    check(
+      !slipDay || parsed.metrics.infiltratorsThrough === 1,
+      'exported JSON records infiltrators through accurately',
+    )
+    check(!rawExport.includes('sk-ant-'), 'exported JSON never includes an API key')
+
+    // Back to title clears the completed save
+    await page.click('[data-action=to-title]')
+    await page.waitForSelector('.title-screen')
+    const afterClear = await page.evaluate(() => localStorage.getItem('oversight-save'))
+    check(afterClear === null, 'Back to title clears the finished save')
   }
 
   check(errors.length === 0, `no console errors ${errors.length ? JSON.stringify(errors) : ''}`)
@@ -390,22 +547,30 @@ async function admissible(page) {
   return page.evaluate(() => window.__oversightTest.current().admissible)
 }
 
-// Processes the whole line with correct decisions, then closes the booth
-async function playByTruth(page) {
+// Processes the whole line with correct decisions (optionally admitting one infiltrator),
+// then closes the booth
+async function playByTruth(page, options = {}) {
   let count = 0
+  let slipped = false
   for (let i = 0; i < 40; i++) {
-    if (await page.locator('[data-action=end-shift]').count()) return count
+    if (await page.locator('[data-action=end-shift]').count()) return { count, slipped }
     const label = await page.textContent('[data-action=call-next]')
     if (label.includes('Close')) {
       await page.click('[data-action=call-next]')
-      return count
+      return { count, slipped }
     }
     await page.click('[data-action=call-next]')
     await page.waitForSelector('.doc[data-applicant]')
-    await stamp(page, (await admissible(page)) ? 'approve' : 'deny')
+    const isAdmissible = await admissible(page)
+    let decision = isAdmissible ? 'approve' : 'deny'
+    if (options.letOneSlip && !isAdmissible && !slipped) {
+      decision = 'approve'
+      slipped = true
+    }
+    await stamp(page, decision)
     count += 1
   }
-  return count
+  return { count, slipped }
 }
 
 async function main() {

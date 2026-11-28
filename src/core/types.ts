@@ -280,6 +280,7 @@ export type GameEventKind =
   | 'late_discovery'
   | 'error_citation'
   | 'bribe_kept'
+  | 'commendation'
   | 'note'
 
 // A sabotaged tool either takes longer or does not work at all for one day

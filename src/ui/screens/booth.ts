@@ -18,6 +18,15 @@ import type { TypingResult } from '../../core/docLines'
 import { DOC_TITLES, isNumbered } from '../../core/documents'
 import { formatMoney } from '../../core/economy'
 import type { Decision, IncidentKind, StandardQuestion, ViolationCode } from '../../core/types'
+import {
+  isMuted,
+  onMuteChange,
+  playClockTick,
+  playPrinter,
+  playSpeaker,
+  playStamp,
+  toggleMuted,
+} from '../audio'
 import { bulletinSheet, calendarItem } from '../components/bulletin'
 import { renderDocument, renderReportSlip } from '../components/document'
 import { portraitCanvas } from '../components/portrait'
@@ -66,13 +75,13 @@ const SHORT_TOOL: Record<DeepToolId, string> = {
 
 // Where the papers of a new person land: two columns, then fanned on top
 const DOC_SPOTS: [number, number][] = [
-  [14, 14],
-  [384, 14],
-  [14, 318],
-  [384, 318],
-  [196, 160],
-  [100, 90],
-  [290, 240],
+  [14, 12],
+  [384, 12],
+  [14, 306],
+  [384, 306],
+  [196, 152],
+  [100, 84],
+  [290, 230],
 ]
 
 const RULER_MIN = 140
@@ -97,6 +106,8 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   let lastFrame = performance.now()
   let carry = 0
   let raf = 0
+  let lastLateTickMinute = -1
+  let lastLateTickReal = 0
   const minutesPerSecond = (SHIFT.endMinute - SHIFT.startMinute) / options.shiftRealSeconds
   const applicantItems: HTMLElement[] = []
   let envelope: HTMLElement | null = null
@@ -111,6 +122,15 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const clock = createClockView()
   const queue = createQueue()
   const moneyLabel = el('div', { className: 'tb-money' })
+  const muteButton = el('button', { className: 'btn small ghost mute-btn' })
+  muteButton.type = 'button'
+  muteButton.dataset.action = 'toggle-mute'
+  const syncMuteButton = (muted: boolean) => {
+    muteButton.textContent = muted ? 'Muted [M]' : 'Sound [M]'
+    muteButton.title = muted ? 'Unmute booth audio (M)' : 'Mute booth audio (M)'
+    muteButton.classList.toggle('muted', muted)
+  }
+  syncMuteButton(isMuted())
   const pauseButton = el('button', { className: 'btn small ghost', text: 'Pause [P]' })
   pauseButton.type = 'button'
   const nextButton = el('button', { className: 'btn primary', text: 'Call next' })
@@ -134,6 +154,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       queue.root,
     ),
     el('div', { className: 'tb-spacer' }),
+    muteButton,
     pauseButton,
     nextButton,
   )
@@ -244,14 +265,14 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   const bulletin = bulletinSheet(ctx.bulletin)
   const calendar = calendarItem(ctx.date, ctx.dayIndex)
   calendar.classList.add('desk-fixed')
-  placeAt(calendar, 754, 566)
+  placeAt(calendar, 754, 552)
   deskArea.append(calendar)
   const canDrag = () => !inspecting && !armed
   const topDeskZ = () =>
     Math.max(0, ...[...deskArea.children].map((c) => Number((c as HTMLElement).style.zIndex || 0)))
   // Rulebook and bulletin can be put away to make room. On day 1 both start open.
   const panels = [
-    { node: rulebook.root, left: 356, top: 222, label: 'Rulebook' },
+    { node: rulebook.root, left: 356, top: 214, label: 'Rulebook' },
     { node: bulletin, left: 404, top: 8, label: 'Bulletin' },
   ].map((panel) => {
     const button = el('button', { className: 'btn small ghost panel-btn', text: panel.label })
@@ -305,7 +326,9 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   })
   incidentButton.type = 'button'
   incidentButton.dataset.action = 'incident'
-  const inspectBanner = el('div', { className: 'inspect-banner hidden' })
+  const IDLE_BANNER =
+    'Drag papers to arrange · Press I to inspect · Pick a stamp to approve or deny.'
+  const inspectBanner = el('div', { className: 'inspect-banner idle', text: IDLE_BANNER })
   const toolbar = el(
     'div',
     { className: 'toolbar' },
@@ -358,9 +381,18 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   }
 
   const refreshTop = () => {
-    clock.set(loop.clock, loop.minutesLeft <= 60)
+    const late = loop.minutesLeft <= 60
+    clock.set(loop.clock, late)
     queue.set(loop.queue.length)
     moneyLabel.textContent = formatMoney(loop.state.economy.money)
+    if (late && loop.minutesLeft > 0 && !paused && !finished && loop.clock !== lastLateTickMinute) {
+      const now = performance.now()
+      lastLateTickMinute = loop.clock
+      if (now - lastLateTickReal >= 550) {
+        lastLateTickReal = now
+        playClockTick(loop.minutesLeft <= 15)
+      }
+    }
   }
 
   const refreshControls = () => {
@@ -424,6 +456,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   // Show the person's lines one after another in the bubble and the transcript
   const speak = async (lines: readonly SpokenLine[]) => {
     for (const line of lines) {
+      playSpeaker()
       transcript.add('applicant', line.text)
       await speech.say(line.text)
     }
@@ -444,7 +477,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     }
   }
 
-  const showBanner = (text: string, kind: 'hit' | 'miss' | 'info') => {
+  const showBanner = (text: string, kind: 'hit' | 'miss' | 'info' | 'idle') => {
     inspectBanner.textContent = text
     inspectBanner.className = `inspect-banner ${kind}`
   }
@@ -453,7 +486,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     inspecting = on
     if (!on) {
       clearSelection()
-      inspectBanner.classList.add('hidden')
+      showBanner(IDLE_BANNER, 'idle')
     } else {
       showBanner(
         'INSPECT: click two things that should agree. A rule alone can show a missing document.',
@@ -520,7 +553,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       el('div', { className: 'env-buttons' }, keep, back),
     )
     envelope.dataset.applicant = 'envelope'
-    placeAt(envelope, 200, 470)
+    placeAt(envelope, 200, 456)
     makeDraggable(envelope, { bounds: deskArea, canDrag })
     deskArea.append(envelope)
     bringToFront(envelope)
@@ -557,6 +590,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   }
 
   const addSlip = (title: string, lines: readonly string[]) => {
+    playPrinter()
     const slip = renderReportSlip(title, lines, `${formatMinute(loop.clock)} · OFFICER COPY`)
     placeAt(slip, 300 + (slipCount % 4) * 24, 120 + (slipCount % 4) * 30)
     slipCount += 1
@@ -594,9 +628,16 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     busy = true
     refreshControls()
     let partials = 0
+    let streamSpoke = false
     const result = await loop.ask(request, (partial) => {
       partials += 1
-      if (partials > 1) speech.stream(partial)
+      if (partials > 1) {
+        if (!streamSpoke) {
+          streamSpoke = true
+          playSpeaker()
+        }
+        speech.stream(partial)
+      }
     })
     if (!result.ok) {
       note(result.message)
@@ -879,6 +920,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
       return
     }
     armed = null
+    playStamp(decision)
     const paper =
       target ??
       applicantItems.find((n) => n.classList.contains('doc-passport')) ??
@@ -952,6 +994,7 @@ export function boothScreen(options: BoothOptions): BoothScreen {
     if (loop.queue.length === 0 && !session()) finishShift(false)
     else void callNext()
   })
+  muteButton.addEventListener('click', () => toggleMuted())
   pauseButton.addEventListener('click', togglePause)
   resumeButton.addEventListener('click', togglePause)
   inspectButton.addEventListener('click', () => setInspecting(!inspecting))
@@ -988,7 +1031,8 @@ export function boothScreen(options: BoothOptions): BoothScreen {
 
   const onKey = (event: KeyboardEvent) => {
     if (event.target instanceof HTMLInputElement) return
-    if (event.key === 'p' || event.key === 'P') togglePause()
+    if (event.key === 'm' || event.key === 'M') toggleMuted()
+    else if (event.key === 'p' || event.key === 'P') togglePause()
     else if (paused || finished || modalOpen) return
     else if (event.key === 'i' || event.key === 'I') setInspecting(!inspecting)
     else if (event.key === 'Escape') {
@@ -1026,12 +1070,14 @@ export function boothScreen(options: BoothOptions): BoothScreen {
   }
 
   const unsubscribeNotices = options.subscribeNotices?.((text) => note(text)) ?? (() => undefined)
+  const unsubscribeMute = onMuteChange(syncMuteButton)
 
   const destroy = () => {
     cancelAnimationFrame(raf)
     window.removeEventListener('keydown', onKey)
     unsubscribe()
     unsubscribeNotices()
+    unsubscribeMute()
   }
 
   clearApplicant()

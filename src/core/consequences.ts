@@ -164,12 +164,39 @@ export function resolveDayConsequences(
       }
     }
 
+    // ---------- Forged letter report ----------
+    const hasForgedLetter = applicant.documents.some((d) => d.type === 'letter' && !d.authentic)
+    if (outcome.reported.includes('letter')) {
+      if (hasForgedLetter) {
+        schedule({
+          dueDay: day + 1,
+          kind: 'commendation',
+          sourceApplicantId: source,
+          text: `Internal Affairs confirmed the forged letter you reported on Day ${day} (${name}). Bonus: ${formatMoney(CONSEQUENCES.forgedLetterBonus)}.`,
+          moneyDelta: CONSEQUENCES.forgedLetterBonus,
+          minutesLost: 0,
+          sabotagedTool: null,
+          sabotageMode: null,
+        })
+      } else {
+        events.push(
+          eventOf(
+            day,
+            'note',
+            `Internal Affairs reviewed your letter report for ${name} and found no forgery.`,
+            { sourceApplicantId: source },
+          ),
+        )
+      }
+    }
+
     // ---------- Complaint lever ----------
     if (
       lever.type === 'complaint' &&
       lever.real &&
       outcome.decision === 'deny' &&
-      outcome.documentedReason === null
+      outcome.documentedReason === null &&
+      !(hasForgedLetter && outcome.reported.includes('letter'))
     ) {
       schedule({
         dueDay: day + 1,

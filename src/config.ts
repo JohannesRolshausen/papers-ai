@@ -170,4 +170,6 @@ export const CONSEQUENCES = {
   sabotageDownChance: 0.4,
   sabotageSlowFactor: 2,
   threatFine: 20,
+  // Bonus awarded when Internal Affairs confirms a reported forged letter
+  forgedLetterBonus: 10,
 } as const

@@ -15,6 +15,7 @@
     "format:check": "prettier --check .",
     "sim": "tsx scripts/sim.ts",
     "smoke": "node scripts/smoke.cjs",
+    "smoke:full": "node scripts/smoke.cjs --full",
     "smoke:claude": "node scripts/smoke.cjs --claude"
   },
   "dependencies": {

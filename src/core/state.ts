@@ -102,14 +102,102 @@ export function serializeGame(state: GameState): string {
   return JSON.stringify(state)
 }
 
+const VALID_PHASES = new Set<GameState['phase']>([
+  'bulletin',
+  'shift',
+  'evening',
+  'final',
+  'gameover',
+])
+
+function isValidGameState(value: unknown): value is GameState {
+  if (!value || typeof value !== 'object') return false
+  const parsed = value as Partial<GameState>
+  if (parsed.version !== SAVE_VERSION) return false
+  if (typeof parsed.seed !== 'number' || !Number.isFinite(parsed.seed)) return false
+  if (typeof parsed.difficulty !== 'string' || !(parsed.difficulty in DIFFICULTIES)) return false
+  if (typeof parsed.daysTotal !== 'number' || parsed.daysTotal < 1) return false
+  if (typeof parsed.dayIndex !== 'number' || parsed.dayIndex < 1) return false
+  if (typeof parsed.phase !== 'string' || !VALID_PHASES.has(parsed.phase)) return false
+  if (!parsed.settings || typeof parsed.settings !== 'object') return false
+  if (parsed.settings.aiMode !== 'offline' && parsed.settings.aiMode !== 'claude') return false
+  if (
+    typeof parsed.settings.shiftRealSeconds !== 'number' ||
+    parsed.settings.shiftRealSeconds <= 0
+  ) {
+    return false
+  }
+  if (!parsed.world || typeof parsed.world !== 'object' || !parsed.world.persons) return false
+  if (typeof parsed.world.persons !== 'object' || !parsed.world.characters) return false
+  if (
+    !parsed.schedule ||
+    typeof parsed.schedule !== 'object' ||
+    !Array.isArray(parsed.schedule.days)
+  ) {
+    return false
+  }
+  if (
+    !parsed.economy ||
+    typeof parsed.economy !== 'object' ||
+    typeof parsed.economy.money !== 'number' ||
+    !Array.isArray(parsed.economy.ledger)
+  ) {
+    return false
+  }
+  if (!parsed.ai || typeof parsed.ai !== 'object' || typeof parsed.ai.budget !== 'number') {
+    return false
+  }
+  if (!Array.isArray(parsed.days) || !Array.isArray(parsed.pending)) return false
+  return true
+}
+
 export function deserializeGame(json: string): GameState | null {
   try {
-    const parsed = JSON.parse(json) as Partial<GameState>
-    if (parsed.version !== SAVE_VERSION || !parsed.world || !parsed.schedule) return null
-    return parsed as GameState
+    const parsed: unknown = JSON.parse(json)
+    return isValidGameState(parsed) ? parsed : null
   } catch {
     return null
   }
+}
+
+export type SaveLoadResult =
+  | { status: 'empty' }
+  | { status: 'ok'; state: GameState }
+  | { status: 'corrupted'; reason: string }
+  | { status: 'unavailable'; reason: string }
+
+// Inspects the stored save so the UI can distinguish a missing save from a damaged one.
+export function inspectSave(storage: StorageLike | null, key = SAVE_KEY): SaveLoadResult {
+  if (!storage) {
+    return { status: 'unavailable', reason: 'Browser storage is unavailable.' }
+  }
+  let raw: string | null
+  try {
+    raw = storage.getItem(key)
+  } catch {
+    return { status: 'unavailable', reason: 'Browser storage could not be read.' }
+  }
+  if (raw === null || raw === '') return { status: 'empty' }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { status: 'corrupted', reason: 'The saved game is not valid JSON.' }
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { status: 'corrupted', reason: 'The saved game is malformed.' }
+  }
+  const version = (parsed as { version?: unknown }).version
+  if (version !== SAVE_VERSION) {
+    return {
+      status: 'corrupted',
+      reason: `The saved game uses an unsupported format (version ${String(version ?? 'unknown')}).`,
+    }
+  }
+  if (!isValidGameState(parsed)) {
+    return { status: 'corrupted', reason: 'The saved game is incomplete or damaged.' }
+  }
+  return { status: 'ok', state: parsed }
 }
 
 export function saveGame(state: GameState, storage: StorageLike, key = SAVE_KEY): boolean {
@@ -122,12 +210,8 @@ export function saveGame(state: GameState, storage: StorageLike, key = SAVE_KEY)
 }
 
 export function loadGame(storage: StorageLike, key = SAVE_KEY): GameState | null {
-  try {
-    const json = storage.getItem(key)
-    return json ? deserializeGame(json) : null
-  } catch {
-    return null
-  }
+  const result = inspectSave(storage, key)
+  return result.status === 'ok' ? result.state : null
 }
 
 export function clearSave(storage: StorageLike, key = SAVE_KEY): void {
